@@ -2,6 +2,7 @@ function lerp(a,b,t)
 	return a*(1-t)+b*t
 end
 
+local v_up={0,1,0}
 function make_v(a,b)
 	return {
 		b[1]-a[1],
@@ -9,9 +10,22 @@ function make_v(a,b)
 		b[3]-a[3]
   }
 end
+function v_zero()
+	return {0,0,0}
+end
 function v_clone(v)
 	return {v[1],v[2],v[3]}
 end
+function v_min(a,b)
+	return {min(a[1],b[1]),min(a[2],b[2]),min(a[3],b[3])}
+end
+function v_max(a,b)
+	return {max(a[1],b[1]),max(a[2],b[2]),max(a[3],b[3])}
+end
+function v_sqr(a)
+	return {a[1]*a[1],a[2]*a[2],a[3]*a[3]}
+end
+
 function v_dot(a,b)
 	return a[1]*b[1]+a[2]*b[2]+a[3]*b[3]
 end
@@ -151,6 +165,77 @@ function m_x_n(m,v)
 	return {m[1]*x+m[5]*y+m[9]*z,m[2]*x+m[6]*y+m[10]*z,m[3]*x+m[7]*y+m[11]*z}
 end
 
+function m_scale(m,scale)
+	for i=1,#m do
+		m[i]*=scale
+	end
+end
+
+-- 3x3 matrix operations
+function make_m3(x,y,z)
+	return {
+		x or 1,0,0,
+		0,y or 1,0,
+		0,0,z or 1}
+end
+function m3_x_v(m,v)
+	local x,y,z=v[1],v[2],v[3]
+	return {m[1]*x+m[4]*y+m[7]*z,m[2]*x+m[5]*y+m[8]*z,m[3]*x+m[6]*y+m[9]*z}
+end
+-- inplace matrix multiply invert
+function m3_inv_x_v(m,v)
+	local x,y,z=v[1],v[2],v[3]
+	return {m[1]*x+m[2]*y+m[3]*z,m[4]*x+m[5]*y+m[6]*z,m[7]*x+m[8]*y+m[9]*z}
+end
+-- generic matrix inverse
+function m3_inv(me)
+	local te={
+	me[9]*me[5]-me[6]*me[8],me[9]*me[2]+me[3]*me[8],me[6]*me[2]-me[3]*me[5],
+	-me[9]*me[4]+me[6]*me[7],me[9]*me[1]-me[3]*me[7],-me[6]*me[1]+me[3]*me[4],
+	me[9]*me[4]-me[5]*me[8],-me[8]*me[1]+me[2]*me[7],me[5]*me[1]-me[2]*me[4]}
+
+	local det = me[1]*te[1]+me[2]*te[4]+me[3]*te[7]
+	-- not inversible?
+	assert(det>0)
+	m_scale(te,1/det)
+	return te
+end
+
+-- matrix transpose
+function m3_transpose(m)
+	return {
+		m[1],m[4],m[7],
+		m[2],m[5],m[8],
+		m[3],m[6],m[9]}
+end
+-- matrix 
+function m3_x_m3(a,b)
+	local a11,a12,a13=a[1],a[4],a[7]
+	local a21,a22,a23=a[2],a[5],a[8]
+	local a31,a32,a33=a[3],a[6],a[9]
+	local b11,b12,b13=b[1],b[4],b[7]
+	local b21,b22,b23=b[2],b[5],b[8]
+	local b31,b32,b33=b[3],b[6],b[9]
+	
+ return {
+		a11*b11+a12*b21+a13*b31,
+		a21*b11+a22*b21+a23*b31,
+		a31*b11+a32*b21+a33*b31,
+		a11*b12+a12*b22+a13*b32,
+		a21*b12+a22*b22+a23*b32,
+		a31*b12+a32*b22+a33*b32,
+		a11*b13+a12*b23+a13*b33,
+		a21*b13+a22*b23+a23*b33,
+		a31*b13+a32*b23+a33*b33
+    }
+end
+
+function m3_print(m)
+	for j=0,2 do
+		printh(m[j*3+1].."\t"..m[j*3+2].."\t"..m[j*3+3])
+	end
+end
+
 -- quaternion
 function make_q(v,angle)
 	angle/=2
@@ -195,7 +280,7 @@ function q_x_q(a,b)
 	a[4]=qaw*qbw-qax*qbx-qay*qby-qaz*qbz
 end
 
-function m_from_q(q)
+function m3_from_q(q)
 	local x,y,z,w=q[1],q[2],q[3],q[4]
 	local x2,y2,z2=x+x,y+y,z+z
 	local xx,xy,xz=x*x2,x*y2,x*z2
@@ -203,8 +288,8 @@ function m_from_q(q)
 	local wx,wy,wz=w*x2,w*y2,w*z2
 
 	return {
-		1-(yy+zz),xy+wz,xz-wy,0,
-		xy-wz,1-(xx+zz),yz+wx,0,
-		xz+wy,yz-wx,1-(xx+yy),0,
-		0,0,0,1}
+		1-(yy+zz),xy+wz,xz-wy,
+		xy-wz,1-(xx+zz),yz+wx,
+		xz+wy,yz-wx,1-(xx+yy)}
 end
+

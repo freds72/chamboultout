@@ -1,5 +1,5 @@
 pico-8 cartridge // http://www.pico-8.com
-version 18
+version 33
 __lua__
 -- chamboultout
 -- by @freds72
@@ -9,6 +9,7 @@ __lua__
 #include polyfill.lua
 #include math.lua
 
+local time_t,time_dt=0,1/30
 local _things={}
 local physic_actors={}
 local v_grav={0,-1,0}
@@ -16,15 +17,10 @@ local _sun_dir={0,-0.707,0.707}
 local world={}
 
 -- camera
-local cam
+local _cam
 local k_far,k_near=0,2
 local k_right,k_left=4,8
 local z_near=1
-
-local face_id=0
--- light direction (sun)
-local light_n={-0.707,-0.707,0}
-
 
 -- physic thresholds
 local k_small,k_small_v=0.001,0.01
@@ -40,7 +36,7 @@ function smoothstep(t)
 	return t*t*(3-2*t)
 end
 
--->8 
+-->8
 -- physic engine
 -- creates a collision solver for:
 -- body
@@ -57,19 +53,17 @@ end
 function make_contact_solver(a,p,n,d)
 	local nimpulse=0
 	local ra=make_v(a.pos,p)
-	local racn=make_v_cross(ra,n)
+	local racn=v_cross(ra,n)
 
 	local nm=a.mass_inv
-	nm+=v_dot(racn,m_x_v(a.i_inv,racn))
+	nm+=v_dot(racn,m3_x_v(a.i_inv,racn))
 	nm=1/nm
 	
 	-- baumgarte
 	local bias=-k_bias*max(d+k_slop)/time_dt
 
 	-- restitution bias
-	local va=v_clone(a.v)
-	v_add(va,make_v_cross(a.omega,ra))
-	local dv=-v_dot(va,n)
+	local dv=-v_dot(v_add(a.v,v_cross(a.omega,ra)),n)
 	-- todo:find out unit??
 	if dv<-1 then
 		bias-=a.hardness*dv
@@ -78,7 +72,7 @@ function make_contact_solver(a,p,n,d)
 	-- contact solver
 	return function()
 		local dv,n=v_clone(a.v),v_clone(n)
-		v_add(dv,make_v_cross(a.omega,ra))
+		a.v=v_add(a.v,v_cross(a.omega,ra))
 
 		local lambda=-nm*(v_dot(dv,n)+bias)
 	
@@ -89,13 +83,13 @@ function make_contact_solver(a,p,n,d)
 		if(lambda<k_small) return false
 		-- correct linear velocity
 		v_scale(n,lambda)
-		v_add(a.v,n,a.mass_inv)
+		a.v=v_add(a.v,n,a.mass_inv)
 		-- correct angular velocity
-		v_add(
+		a.omega=v_add(
 			a.omega,
-			m_x_v(
+			m3_x_v(
 				a.i_inv,
-				make_v_cross(ra,n)
+				v_cross(ra,n)
 			))
 		return true
 	end
@@ -103,9 +97,10 @@ end
 
 -- rigid body extension for a given actor
 -- bounding box
-function make_rigidbody(a,bbox)
+function make_rigidbody(a)
+	local bbox=a.model
 	local force,torque=v_zero(),v_zero()
- -- model bounding box
+ 	-- model bounding box
 	local vmin,vmax={32000,32000,32000},{-32000,-32000,-32000}
 	for _,v in pairs(bbox.v) do
 		vmin,vmax=v_min(vmin,v),v_max(vmax,v)
@@ -113,29 +108,36 @@ function make_rigidbody(a,bbox)
 	
 	-- compute inertia tensor
 	local size=v_sqr(make_v(vmin,vmax))
-	local ibody=make_m(size[2]+size[3],size[1]+size[3],size[1]+size[2])
+	local ibody=make_m3(size[2]+size[3],size[1]+size[3],size[1]+size[2])
 	m_scale(ibody,a.mass/12)
 	
 	-- invert 
-	local ibody_inv=m_inv(ibody)
+	local ibody_inv=m3_inv(ibody)
 	-- 
 	local g={0,-24*a.mass,0}
-	
+	local m=a.m
 	local rb={
-		i_inv=make_m(),
+		i_inv=make_m3(),
 		v=v_zero(),
+		rot={
+			m[1],m[2],m[3],
+			m[5],m[6],m[7],
+			m[9],m[10],m[11]
+		},
+		q=make_q(_sun_dir,rnd()),
 		omega=v_zero(),
 		mass_inv=1/a.mass,
+		-- obj to world space
+		pt_toworld=function(self,p)
+			return v_add(m3_x_v(self.rot,p),self.pos)
+		end,		
 		-- world velocity
 		pt_velocity=function(self,p)
-			p=make_v_cross(self.omega,make_v(self.pos,p))
-			v_add(p,self.v)
-			return p
+			return v_add(v_cross(self.omega,make_v(self.pos,p)),self.v)
 		end,
 		incident_face=function(self,rn)
-			rn=v_clone(rn)
-			-- world to local
-			m_inv_x_v(self.m,rn)
+			-- world to local (normal)
+			rn=m3_inv_x_v(self.rot,rn)
 			local dmin,fmin,nmin=32000
 			for _,f in pairs(bbox.f) do
 				local n=f.n
@@ -148,88 +150,76 @@ function make_rigidbody(a,bbox)
 		end,
 			-- register a force
 		add_force=function(self,f,p)
-			v_add(force,f,a.mass)
-			v_add(torque,make_v_cross(make_v(self.pos,p),f))
+			force=v_add(force,f,a.mass)
+			torque=v_add(torque,v_cross(make_v(self.pos,p),f))
 		end,
-		add_impulse=function(self,f,p)
-		 
-			v_add(self.v,f,self.mass_inv)
-			v_add(self.omega,m_x_v(self.i_inv,make_v_cross(make_v(self.pos,p),f)))
+		add_impulse=function(self,f,p)		 
+			self.v=v_add(self.v,f,self.mass_inv)
+			self.omega=v_add(self.omega,m3_x_v(self.i_inv,v_cross(make_v(self.pos,p),f)))
 		end,
 		-- apply forces & torque for iteration
 		prepare=function(self,dt)
 			-- add gravity
-			v_add(force,g)
+			force=v_add(force,g)
 		
 			-- inverse inertia tensor
-			self.i_inv=m_x_m(m_x_m(self.m,ibody_inv),m_transpose(self.m))
+			self.i_inv=m3_x_m3(m3_x_m3(self.rot,ibody_inv),m3_transpose(self.rot))
 	
 			-- velocity
-			v_add(self.v,force,self.mass_inv*dt)
+			self.v=v_add(self.v,force,self.mass_inv*dt)
 	
 			-- angular velocity
-			v_add(self.omega,m_x_v(self.i_inv,torque),dt)
+			self.omega=v_add(self.omega,m3_x_v(self.i_inv,torque),dt)
 			
 			-- friction
 			v_scale(self.v,1/(1+dt*0.4))
 			v_scale(self.omega,1/(1+dt*0.6))
 		end,
 		integrate=function(self,dt)
-			v_add(self.pos,self.v,dt)
+			self.pos=v_add(self.pos,self.v,dt)
 			q_dydt(self.q,self.omega,dt)
-			self.m=m_from_q(self.q)
+			self.rot=m3_from_q(self.q)
+			-- todo:
+			local r=self.rot
+			self.m={
+				r[1],r[2],r[3],0,
+				r[4],r[5],r[6],0,
+				r[7],r[8],r[9],0,
+				0,0,0,1
+			}
+			m_set_pos(self.m,self.pos)
+
 			-- clear forces
 			force,torque=v_zero(),v_zero()
-			-- hit effect
-			for _,v in pairs(bbox.v) do
-			 -- new contact?
-				if v.contact_t and v.contact_t==time_t and (v.last_contact_t==nil or time_t-v.last_contact_t>10) then
-				 sfx(11)	
-				 break
-			 end 
-			end
 		end,
 		update_contacts=function(self,contacts)
 			-- ground contacts against incident face
 			local f=self:incident_face(v_up)
-			local raw_contacts={}
-			for _,vi in pairs(f.vi) do
-				local v=bbox.v[vi]
+			for vi=1,4 do
+				local v=f[vi]				
 				-- to world space
 				local p=self:pt_toworld(v)
-				local h,n=get_altitude_and_n(p,true)
+				local h,n=0,{0,1,0}
 				local depth=h-p[2]
 				if depth>k_small then
 					depth=v_dot(n,{0,depth,0})
 					-- deep enough?
-					if depth>-k_small then						
-						if is_contact(self,p,n,depth) then
-						 	-- find contact by normal
-							local cn=raw_contacts[n] or {v_zero(),v_clone(n),0,0}
-							v_add(cn[1],p)
-							v_add(cn[2],n)
-							v_normz(cn[2])
-								cn[3]+=depth
-								cn[4]+=1	
-							raw_contacts[n]=cn
-								-- record contact time
-								v.last_contact_t,v.contact_t=v.contact_t,time_t
-								v.n=n
+					if depth>-k_small then
+						local ct=make_contact_solver(self,p,n,depth)
+						if ct then
+							add(contacts,ct)
+							-- record contact time
+							v.contact_t=time_t
+							v.n=n
 						end
 					end
 				end
 			end
-			
-			for _,c in pairs(raw_contacts) do
-				-- average position
-				v_scale(c[1],c[4])				
-				add(contacts,make_contact_solver(self,c[1],c[2],c[3]/c[4]))
-			end
-        end
+		end
 	}
 	
 	-- register rigid bodies
-	return add(physic_actors,clone(rb,a))
+	return add(physic_actors,setmetatable(a,{__index=rb}))
 end
 
 -- physic world
@@ -429,10 +419,10 @@ function collect_faces(model,m,out)
 
 	for _,face in pairs(model.f) do
 		if v_dot(face.n,cam_pos)>face.cp then
-			-- project vertices
+			-- project vertices (always 4!!)
 			local v0,v1,v2,v3=v_cache[face[1]],v_cache[face[2]],v_cache[face[3]],v_cache[face[4]]
 			-- mix of near/far verts?
-			if v0.outcode&v1.outcode&v2.outcode&(v3 and v3.outcode or 0xffff)==0 then
+			if v0.outcode&v1.outcode&v2.outcode&v3.outcode==0 then
 				local verts={v0,v1,v2,v3}
 
 				local ni,is_clipped,w=9,v0.clipcode+v1.clipcode+v2.clipcode+v3.clipcode,v0.w+v1.w+v2.w+v3.w
@@ -454,7 +444,8 @@ end
 
 -- draw face
 function draw_faces(faces)
-	for i,d in ipairs(faces) do		
+	for i,d in ipairs(faces) do
+		-- todo: color ramp		
 		polyfill(d,8+8*d.light)		
 	end
 end
@@ -466,8 +457,9 @@ function draw_ground()
     draw_faces(out)
 end
 
-function make_cube(half_width,pos,rot)
+function make_cube(mass,half_width,pos,rot)
 	local model={
+		hw=half_width,
 		v={
 			split"-1,-1,-1",
 			split"1,-1,-1",
@@ -508,6 +500,8 @@ function make_cube(half_width,pos,rot)
 	local m={unpack(rot)}
 	m_set_pos(m,pos)
 	return {
+		mass=mass,
+		hardness=0.02,
 		model=model,
 		pos=v_clone(pos),
 		m=m
@@ -521,17 +515,18 @@ function _init()
 	-- enable lock+button alias
 	poke(0x5f2d,7)
 
-	_cam=make_cam({0,20,-10})
+	_cam=make_cam({0,25,-40})
 
 	-- cube
-	add(_things,make_cube(10,{0,10,0},make_m_from_euler(0,rnd(),0)))
+	add(_things,make_rigidbody(make_cube(1,5,{0,50,0},make_m_from_euler(0,rnd(),0))))
 	-- floor
-	_ground=make_cube(50,{0,-50,0},make_m_from_euler(0,0,0))
+	_ground=make_cube(0,50,{0,-50,0},make_m_from_euler(0,0,0))
 end
 
 function _update()
-    --world:update()
+    world:update()
 	_cam:update()
+	time_t+=1
 end
 
 function _draw()
