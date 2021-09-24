@@ -103,16 +103,10 @@ function make_rigidbody(a)
 	local ibody_inv=m3_inv(ibody)
 	-- 
 	local g={0,-24*a.mass,0}
-	local m=a.m
 	local rb={
 		i_inv=make_m3(),
 		v=v_zero(),
-		rot={
-			m[1],m[2],m[3],
-			m[5],m[6],m[7],
-			m[9],m[10],m[11]
-		},
-		q=make_q(_sun_dir,rnd()),
+		rot=m3_from_q(a.q),
 		omega=v_zero(),
 		mass_inv=1/a.mass,
 		-- obj to world space
@@ -439,12 +433,19 @@ end
 
 function draw_ground()
     local out={}
-	collect_faces(_ground.model,_ground.m,out)
+	local m={
+		1,0,0,0,
+		0,1,0,0,
+		0,0,1,0,
+		0,0,0,1
+	}
+	m_set_pos(m,{_cam.pos[1],-0.5,_cam.pos[3]})
+	collect_faces(_ground.model,m,out)
 
     draw_faces(out)
 end
 
-function make_box(mass,extents,pos,rot)
+function make_box(mass,extents,pos,q)
 	local ex,ey,ez=unpack(extents)
 	ex/=2
 	ey/=2
@@ -489,15 +490,13 @@ function make_box(mass,extents,pos,rot)
 		-- fast viz check
 		f.cp=v_dot(f.n,f[1])
 	end
-	local m={unpack(rot)}
-	m_set_pos(m,pos)
 	return {
 		mass=mass,
 		hardness=0.02,
 		e={ex,ey,ez},
 		model=model,
 		pos=v_clone(pos),
-		m=m
+		q=q_clone(q)
 	}
 end
 
@@ -511,10 +510,14 @@ function _init()
 	_cam=make_cam({0,25,-40})
 
 	-- cube
-	add(_things,make_rigidbody(make_box(1,{5,5,25},{0,50,0},make_m_from_euler(0,rnd(),0))))
+	add(_things,
+		make_rigidbody(
+			make_box(
+				1,{5,5,25},
+				{0,50,0},make_q(v_normz({rnd(),rnd(),rnd()},rnd())))))
 
 	-- floor
-	_ground=make_box(0,{50,1,50},{0,-0.5,0},make_m_from_euler(0,0,0))
+	_ground=make_box(0,{500,1,500},{0,-0.5,0},make_q(v_up,0))
 end
 
 function _update()
