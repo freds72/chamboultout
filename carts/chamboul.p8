@@ -100,13 +100,14 @@ function make_rigidbody(a)
 	m_scale(ibody,a.mass/12)
 	
 	-- invert 
+	m3_print(ibody)
 	local ibody_inv=m3_inv(ibody)
 	-- 
 	local g={0,-24*a.mass,0}
 	local rb={
 		i_inv=make_m3(),
 		v=v_zero(),
-		rot=m3_from_q(a.q),
+		rot=m_from_q(a.q),
 		omega=v_zero(),
 		mass_inv=1/a.mass,
 		-- obj to world space
@@ -160,15 +161,9 @@ function make_rigidbody(a)
 		integrate=function(self,dt)
 			self.pos=v_add(self.pos,self.v,dt)
 			q_dydt(self.q,self.omega,dt)
-			self.rot=m3_from_q(self.q)
-			-- todo:
-			local r=self.rot
-			self.m={
-				r[1],r[2],r[3],0,
-				r[4],r[5],r[6],0,
-				r[7],r[8],r[9],0,
-				0,0,0,1
-			}
+			self.rot=m_from_q(self.q)
+			--
+			self.m=self.rot
 			m_set_pos(self.m,self.pos)
 
 			-- clear forces
