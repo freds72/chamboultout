@@ -444,7 +444,7 @@ function draw_ground()
     draw_faces(out)
 end
 
-function make_cube(mass,extents,pos,rot)
+function make_box(mass,extents,pos,rot)
 	local ex,ey,ez=unpack(extents)
 	ex/=2
 	ey/=2
@@ -511,10 +511,10 @@ function _init()
 	_cam=make_cam({0,25,-40})
 
 	-- cube
-	add(_things,make_rigidbody(make_cube(1,{5,5,25},{0,50,0},make_m_from_euler(0,rnd(),0))))
+	add(_things,make_rigidbody(make_box(1,{5,5,25},{0,50,0},make_m_from_euler(0,rnd(),0))))
 
 	-- floor
-	_ground=make_cube(0,{50,1,50},{0,-0.5,0},make_m_from_euler(0,0,0))
+	_ground=make_box(0,{50,1,50},{0,-0.5,0},make_m_from_euler(0,0,0))
 end
 
 function _update()

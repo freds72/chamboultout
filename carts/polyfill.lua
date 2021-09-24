@@ -10,25 +10,31 @@ function polyfill(p,col)
 	for i=1,#p do
 		local p1=p[i]
 		local x1,y1=p1.x,p1.y
-		-- backup before any swap
 		local _x1,_y1=x1,y1
 		if(y0>y1) x0,y0,x1,y1=x1,y1,x0,y0
-		-- exact slope
-		local dx=(x1-x0)/(y1-y0)
+		local cy0,cy1,dx=y0\1+1,y1\1,(x1-x0)/(y1-y0)
 		if(y0<0) x0-=y0*dx y0=0
-		-- subpixel shifting (after clipping)
-		local cy0=ceil(y0)
-		x0+=(cy0-y0)*dx
-		for y=cy0,min(ceil(y1)-1,127) do
+	   	x0+=(-y0+cy0)*dx
+		for y=cy0,min(cy1,127) do
 			local x=nodes[y]
 			if x then
-				rectfill(x,y,x0,y)
+				rectfill(x0,y,x,y)
 			else
-				nodes[y]=x0
+			 nodes[y]=x0
 			end
-			x0+=dx
-		end
-		-- next vertex
+			x0+=dx					
+		end			
+		--break
 		x0,y0=_x1,_y1
+	end
+
+	-- outline
+	color(1)
+	local x0,y0=p0.x,p0.y
+	for i=1,#p do
+		local p1=p[i]
+		local x1,y1=p1.x,p1.y
+		line(x0+0.5,y0+0.5,x1+0.5,y1+0.5)
+		x0,y0=x1,y1
 	end
 end
