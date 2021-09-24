@@ -28,14 +28,6 @@ local k_small,k_small_v=0.001,0.01
 local k_bias=0.2
 local k_slop=0.05
 
-function lerp(a,b,t)
-	return a*(1-t)+b*t
-end
-function smoothstep(t)
-	t=mid(t,0,1)
-	return t*t*(3-2*t)
-end
-
 -->8
 -- physic engine
 -- creates a collision solver for:
@@ -71,8 +63,7 @@ function make_contact_solver(a,p,n,d)
 	
 	-- contact solver
 	return function()
-		local dv,n=v_clone(a.v),v_clone(n)
-		dv=v_add(a.v,v_cross(a.omega,ra))
+		local dv,n=v_add(a.v,v_cross(a.omega,ra)),v_clone(n)
 
 		local lambda=-nm*(v_dot(dv,n)+bias)
 	
@@ -100,14 +91,11 @@ end
 function make_rigidbody(a)
 	local bbox=a.model
 	local force,torque=v_zero(),v_zero()
- 	-- model bounding box
-	local vmin,vmax={32000,32000,32000},{-32000,-32000,-32000}
-	for _,v in pairs(bbox.v) do
-		vmin,vmax=v_min(vmin,v),v_max(vmax,v)
-	end
 	
 	-- compute inertia tensor
-	local size=v_sqr(make_v(vmin,vmax))
+	local size=v_clone(a.e)
+	v_scale(size,2)
+	size=v_sqr(size)
 	local ibody=make_m3(size[2]+size[3],size[1]+size[3],size[1]+size[2])
 	m_scale(ibody,a.mass/12)
 	
@@ -432,7 +420,7 @@ function collect_faces(model,m,out)
 					verts.light=mid(-v_dot(sun,face.n),0,1)
 					-- sort key
 					-- todo: improve
-					verts.key=-(v0.w+v1.w+v2.w+v3.w)/4
+					verts.key=(v0.w+v1.w+v2.w+v3.w)/4
 					out[#out+1]=verts
 				end
 			end
@@ -456,9 +444,12 @@ function draw_ground()
     draw_faces(out)
 end
 
-function make_cube(mass,half_width,pos,rot)
+function make_cube(mass,extents,pos,rot)
+	local ex,ey,ez=unpack(extents)
+	ex/=2
+	ey/=2
+	ez/=2
 	local model={
-		hw=half_width,
 		v={
 			split"-1,-1,-1",
 			split"1,-1,-1",
@@ -480,7 +471,9 @@ function make_cube(mass,half_width,pos,rot)
 		}
 	}
 	for _,v in pairs(model.v) do
-		v_scale(v,half_width)
+		v[1]*=ex
+		v[2]*=ey
+		v[3]*=ez
 	end
 	for _,f in pairs(model.f) do
 		-- de-reference vertex indices
@@ -500,7 +493,8 @@ function make_cube(mass,half_width,pos,rot)
 	m_set_pos(m,pos)
 	return {
 		mass=mass,
-		hardness=0.1,
+		hardness=0.02,
+		e={ex,ey,ez},
 		model=model,
 		pos=v_clone(pos),
 		m=m
@@ -517,9 +511,10 @@ function _init()
 	_cam=make_cam({0,25,-40})
 
 	-- cube
-	add(_things,make_rigidbody(make_cube(1,5,{0,50,0},make_m_from_euler(0,rnd(),0))))
+	add(_things,make_rigidbody(make_cube(1,{5,5,25},{0,50,0},make_m_from_euler(0,rnd(),0))))
+
 	-- floor
-	_ground=make_cube(0,50,{0,-50,0},make_m_from_euler(0,0,0))
+	_ground=make_cube(0,{50,1,50},{0,-0.5,0},make_m_from_euler(0,0,0))
 end
 
 function _update()
