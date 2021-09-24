@@ -72,7 +72,7 @@ function make_contact_solver(a,p,n,d)
 	-- contact solver
 	return function()
 		local dv,n=v_clone(a.v),v_clone(n)
-		a.v=v_add(a.v,v_cross(a.omega,ra))
+		dv=v_add(a.v,v_cross(a.omega,ra))
 
 		local lambda=-nm*(v_dot(dv,n)+bias)
 	
@@ -362,15 +362,16 @@ function z_poly_clip(znear,v)
 		if d1>0 then
 			if d0<=0 then
 				local nv=v_lerp(v0,v1,d0/(d0-d1))
-				nv.x=64+((nv[1]/nv[3])<<6)
-				nv.y=64-((nv[2]/nv[3])<<6)
+				-- znear = 1
+				nv.x=64+nv[1]*64
+				nv.y=64-nv[2]*64
 				res[#res+1]=nv
 			end
 			res[#res+1]=v1
 		elseif d0>0 then
 			local nv=v_lerp(v0,v1,d0/(d0-d1))
-			nv.x=64+((nv[1]/nv[3])<<6)
-			nv.y=64-((nv[2]/nv[3])<<6)
+			nv.x=64+nv[1]*64
+			nv.y=64-nv[2]*64
 			res[#res+1]=nv
 		end
 		v0=v1
@@ -400,7 +401,7 @@ local v_cache_cls={
 
 		-- assume vertex is visible, compute 2d coords
 		local w=64/az
-		local a={ax,ay,az,outcode=outcode,clipcode=outcode&2,x=64+ax*w,y=64-ay*w,w=w}
+		local a={ax,ay,az,outcode=outcode,x=64+ax*w,y=64-ay*w,w=w}
 		t[v]=a
 		return a
 	end
@@ -424,16 +425,14 @@ function collect_faces(model,m,out)
 			-- mix of near/far verts?
 			if v0.outcode&v1.outcode&v2.outcode&v3.outcode==0 then
 				local verts={v0,v1,v2,v3}
-
-				local ni,is_clipped,w=9,v0.clipcode+v1.clipcode+v2.clipcode+v3.clipcode,v0.w+v1.w+v2.w+v3.w
 				-- mix of near+far vertices?
-				if(is_clipped>0) verts=z_poly_clip(z_near,verts)
+				if((v0.outcode|v1.outcode|v2.outcode|v3.outcode)&2!=0) verts=z_poly_clip(z_near,verts)
 				if #verts>2 then
 					verts.f=face
 					verts.light=mid(-v_dot(sun,face.n),0,1)
 					-- sort key
 					-- todo: improve
-					verts.key=-w/4
+					verts.key=-(v0.w+v1.w+v2.w+v3.w)/4
 					out[#out+1]=verts
 				end
 			end
@@ -501,7 +500,7 @@ function make_cube(mass,half_width,pos,rot)
 	m_set_pos(m,pos)
 	return {
 		mass=mass,
-		hardness=0.02,
+		hardness=0.1,
 		model=model,
 		pos=v_clone(pos),
 		m=m
