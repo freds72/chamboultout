@@ -97,19 +97,6 @@ function make_m_from_euler(x,y,z)
 	  0,0,0,1}
 end
 
--- new matrix from a vector+angle (quaternion style)
-function make_m_from_v_angle(up,angle)
-	local fwd={-sin(angle),0,cos(angle)}
-	local right=v_normz(v_cross(up,fwd))
-	fwd=v_cross(right,up)
-	return {
-		right[1],right[2],right[3],0,
-		up[1],up[2],up[3],0,
-		fwd[1],fwd[2],fwd[3],0,
-		0,0,0,1
-	}
-end
-
 function m_set_pos(m,v)
 	m[13]=v[1]
 	m[14]=v[2]

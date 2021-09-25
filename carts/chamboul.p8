@@ -30,6 +30,59 @@ local k_slop=0.05
 
 -->8
 -- physic engine
+function hitscan(boxes,a,b)
+	local closest_hit,closest_t
+	for _,box in pairs(boxes) do
+		local m=box.m
+		-- convert start/end into object space
+		local aa,bb=transform_inv(m,a),transform_inv(m,b)
+		-- use local space for distance check
+		local dir=make_v(aa,bb)
+		-- reset starting points for the next convex space
+		local p0,p1,hit=aa,bb
+		for _,face in pairs(box.model.f) do
+			local plane_dist=face.cp
+			local dist,otherdist=v_dot(face.n,p0),v_dot(face.n,p1)
+			local side,otherside=dist>plane_dist,otherdist>plane_dist
+			-- outside of convex space
+			if(side and otherside) hit=nil break
+			-- crossing a plane
+			local t=dist-plane_dist
+			if t<0 then
+				t-=0x0.01
+			else
+				t+=0x0.01
+			end  
+			-- cliping fraction
+			local frac=t/(dist-otherdist)
+			if frac>0 and frac<1 then
+				local p=v_lerp(p0,p1,frac)
+				if side then
+					-- segment entering
+					p0=p
+					hit=p0
+					hit.owner=box
+					hit.face=face
+				else
+					-- segment leaving
+					p1=p
+				end
+			end
+		end
+		if hit then
+			-- project hit back on segment to find closest hit
+			local t=v_dot(dir,hit)
+			if closest_hit then
+				if(t<closest_t) closest_hit,closest_t=hit,t
+			else
+				closest_hit,closest_t=hit,t
+			end
+		end
+	end
+	-- return hit
+	return closest_hit
+end
+
 -- creates a collision solver for:
 -- body
 -- normal
@@ -105,13 +158,10 @@ function make_rigidbody(a)
 	local ibody_inv=m3_inv(ibody)
 	-- 
 	local g={0,-24*a.mass,0}
-	-- initial condition
-	local m=m_from_q(a.q)
-	m_set_pos(m,a.pos)
 	local rb={
 		i_inv=make_m3(),
 		v=v_zero(),
-		m=m,
+		m=a.m,
 		omega=v_zero(),
 		mass_inv=1/a.mass,
 		-- obj to world space
@@ -329,6 +379,13 @@ function make_cam(pos)
 				-pos[1],-pos[2],-pos[3],1
 			})
             self.pos=pos
+		end,
+		project2d=function(self,p)
+			p=transform(self.m,p)
+			if p[3]>z_near then
+				local w=64/p[3]
+				return 64+p[1]*w,64-p[2]*w,w
+			end
 		end
 	}
 end
@@ -409,7 +466,7 @@ function collect_faces(model,m,out)
 				-- mix of near+far vertices?
 				if((v0.outcode|v1.outcode|v2.outcode|v3.outcode)&2!=0) verts=z_poly_clip(z_near,verts)
 				if #verts>2 then
-					verts.f=face
+					verts.face=face
 					verts.light=mid(-v_dot(sun,face.n),0,1)
 					-- sort key
 					-- todo: improve
@@ -423,10 +480,12 @@ function collect_faces(model,m,out)
 end
 
 -- draw face
-function draw_faces(faces)
+function draw_faces(faces,hit)
 	for i,d in ipairs(faces) do
 		-- todo: color ramp		
-		polyfill(d,8+8*d.light)		
+		local c=8+8*d.light
+		if(hit and hit.face==d.face) c=8
+		polyfill(d,c)		
 	end
 end
 
@@ -489,13 +548,18 @@ function make_box(mass,extents,pos,q)
 		-- fast viz check
 		f.cp=v_dot(f.n,f[1])
 	end
+	-- initial condition
+	local m=m_from_q(q)
+	m_set_pos(m,pos)
+
 	return {
 		mass=mass,
 		hardness=0.1,
 		e={ex,ey,ez},
 		model=model,
 		pos=v_clone(pos),
-		q=q_clone(q)
+		q=q_clone(q),
+		m=m
 	}
 end
 
@@ -515,13 +579,26 @@ function _init()
 				1,{5,5,5},
 				{0,50,0},make_q(v_normz({rnd(),rnd(),rnd()},rnd())))))
 
+	_incident_box=make_box(
+		1,{5,5,5},
+		{20,0,0},make_q(v_up,0))
+	add(_things,_incident_box)
+
 	-- floor
 	_ground=make_box(0,{500,1,500},{0,-0.5,0},make_q(v_up,0))
 end
 
 function _update()
-    world:update()
 	_cam:update()
+
+	-- update "test box"
+	-- local m=_cam.m
+	-- _incident_box.pos=v_add(_cam.pos,{m[3],m[7],m[11]},35)
+	-- _incident_box.m=m3_transpose({unpack(m)})
+	-- m_set_pos(_incident_box.m,_incident_box.pos)
+
+    world:update()
+	
 	time_t+=1
 end
 
@@ -536,6 +613,19 @@ function _draw()
 
 	sort(out)
 
-    draw_faces(out)
+
+	-- 
+	local m=_cam.m
+	local hit=hitscan(_things,_cam.pos,v_add(_cam.pos,{m[3],m[7],m[11]},35))
+
+    draw_faces(out,hit)
+
+	if hit then
+		local x,y,w=_cam:project2d(transform(hit.owner.m,hit))
+		if x then
+			circfill(x,y,w/2,7)
+		end			
+	end
+
 end
 
