@@ -23,7 +23,7 @@ local k_right,k_left=4,8
 local z_near=1
 
 -- physic thresholds
-local k_small,k_small_v=0.001,0.01
+local k_small,k_small_v=0.01,0.1
 -- baumgarte
 local k_bias=0.2
 local k_slop=0.05
@@ -43,6 +43,8 @@ function is_contact(a,p,n,d)
  return true
 end
 function make_contact_solver(a,p,n,d)
+	-- does nothing
+	if(not is_contact(a,p,n,d)) return
 	local nimpulse=0
 	local ra=make_v(a.pos,p)
 	local racn=v_cross(ra,n)
@@ -100,19 +102,21 @@ function make_rigidbody(a)
 	m_scale(ibody,a.mass/12)
 	
 	-- invert 
-	m3_print(ibody)
 	local ibody_inv=m3_inv(ibody)
 	-- 
 	local g={0,-24*a.mass,0}
+	-- initial condition
+	local m=m_from_q(a.q)
+	m_set_pos(m,a.pos)
 	local rb={
 		i_inv=make_m3(),
 		v=v_zero(),
-		rot=m_from_q(a.q),
+		m=m,
 		omega=v_zero(),
 		mass_inv=1/a.mass,
 		-- obj to world space
 		pt_toworld=function(self,p)
-			return v_add(m3_x_v(self.rot,p),self.pos)
+			return m_x_v(self.m,p)
 		end,		
 		-- world velocity
 		pt_velocity=function(self,p)
@@ -120,7 +124,7 @@ function make_rigidbody(a)
 		end,
 		incident_face=function(self,rn)
 			-- world to local (normal)
-			rn=m3_inv_x_v(self.rot,rn)
+			rn=m3_inv_x_v(self.m,rn)
 			local dmin,fmin,nmin=32000
 			for _,f in pairs(bbox.f) do
 				local n=f.n
@@ -146,7 +150,7 @@ function make_rigidbody(a)
 			force=v_add(force,g)
 		
 			-- inverse inertia tensor
-			self.i_inv=m3_x_m3(m3_x_m3(self.rot,ibody_inv),m3_transpose(self.rot))
+			self.i_inv=m3_x_m3(m3_x_m3(self.m,ibody_inv),m3_transpose(self.m))
 	
 			-- velocity
 			self.v=v_add(self.v,force,self.mass_inv*dt)
@@ -161,9 +165,8 @@ function make_rigidbody(a)
 		integrate=function(self,dt)
 			self.pos=v_add(self.pos,self.v,dt)
 			q_dydt(self.q,self.omega,dt)
-			self.rot=m_from_q(self.q)
+			self.m=m_from_q(self.q)
 			--
-			self.m=self.rot
 			m_set_pos(self.m,self.pos)
 
 			-- clear forces
@@ -221,6 +224,7 @@ function world:update()
 	for _,a in pairs(physic_actors) do
 		a:integrate(time_dt)
 	end
+	_contacts=contacts
 end
 
 -->8
@@ -502,13 +506,13 @@ function _init()
 	-- enable lock+button alias
 	poke(0x5f2d,7)
 
-	_cam=make_cam({0,25,-40})
+	_cam=make_cam({0,12,-40})
 
 	-- cube
 	add(_things,
 		make_rigidbody(
 			make_box(
-				1,{5,5,25},
+				1,{5,5,5},
 				{0,50,0},make_q(v_normz({rnd(),rnd(),rnd()},rnd())))))
 
 	-- floor
@@ -533,7 +537,5 @@ function _draw()
 	sort(out)
 
     draw_faces(out)
-
-	print(#out,2,2,7)
 end
 
