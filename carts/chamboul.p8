@@ -50,7 +50,7 @@ function make_contact_solver(a,p,n,d)
 	local racn=v_cross(ra,n)
 
 	local nm=a.mass_inv
-	nm+=v_dot(racn,m3_x_v(a.i_inv,racn))
+	nm+=v_dot(racn,rotate(a.i_inv,racn))
 	nm=1/nm
 	
 	-- baumgarte
@@ -80,7 +80,7 @@ function make_contact_solver(a,p,n,d)
 		-- correct angular velocity
 		a.omega=v_add(
 			a.omega,
-			m3_x_v(
+			rotate(
 				a.i_inv,
 				v_cross(ra,n)
 			))
@@ -116,7 +116,7 @@ function make_rigidbody(a)
 		mass_inv=1/a.mass,
 		-- obj to world space
 		pt_toworld=function(self,p)
-			return m_x_v(self.m,p)
+			return transform(self.m,p)
 		end,		
 		-- world velocity
 		pt_velocity=function(self,p)
@@ -124,7 +124,7 @@ function make_rigidbody(a)
 		end,
 		incident_face=function(self,rn)
 			-- world to local (normal)
-			rn=m3_inv_x_v(self.m,rn)
+			rn=rotate_inv(self.m,rn)
 			local dmin,fmin,nmin=32000
 			for _,f in pairs(bbox.f) do
 				local n=f.n
@@ -142,7 +142,7 @@ function make_rigidbody(a)
 		end,
 		add_impulse=function(self,f,p)		 
 			self.v=v_add(self.v,f,self.mass_inv)
-			self.omega=v_add(self.omega,m3_x_v(self.i_inv,v_cross(make_v(self.pos,p),f)))
+			self.omega=v_add(self.omega,rotate(self.i_inv,v_cross(make_v(self.pos,p),f)))
 		end,
 		-- apply forces & torque for iteration
 		prepare=function(self,dt)
@@ -156,7 +156,7 @@ function make_rigidbody(a)
 			self.v=v_add(self.v,force,self.mass_inv*dt)
 	
 			-- angular velocity
-			self.omega=v_add(self.omega,m3_x_v(self.i_inv,torque),dt)
+			self.omega=v_add(self.omega,rotate(self.i_inv,torque),dt)
 			
 			-- friction
 			v_scale(self.v,1/(1+dt*0.4))
@@ -390,9 +390,9 @@ local v_cache_cls={
 
 function collect_faces(model,m,out)
 	-- cam pos in object space
-	local cam_pos=m_inv_x_v(m,_cam.pos)
+	local cam_pos=transform_inv(m,_cam.pos)
 	-- sun vector in model space
-	local sun=m_inv_x_n(m,_sun_dir)
+	local sun=rotate_inv(m,_sun_dir)
 
 	-- object to world
 	-- world to cam
@@ -491,7 +491,7 @@ function make_box(mass,extents,pos,q)
 	end
 	return {
 		mass=mass,
-		hardness=0.02,
+		hardness=0.1,
 		e={ex,ey,ez},
 		model=model,
 		pos=v_clone(pos),

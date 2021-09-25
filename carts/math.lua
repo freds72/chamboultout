@@ -118,14 +118,14 @@ end
 
 -- inline matrix vector multiply invert
 -- inc. position
-function m_inv_x_v(m,v)
+function transform_inv(m,v)
 	local x,y,z=v[1]-m[13],v[2]-m[14],v[3]-m[15]
 	return {m[1]*x+m[2]*y+m[3]*z,m[5]*x+m[6]*y+m[7]*z,m[9]*x+m[10]*y+m[11]*z}
 end
 
 -- inline matrix vector multiply invert
 -- excl. position
-function m_inv_x_n(m,v)
+function rotate_inv(m,v)
 	local x,y,z=v[1],v[2],v[3]
 	return {m[1]*x+m[2]*y+m[3]*z,m[5]*x+m[6]*y+m[7]*z,m[9]*x+m[10]*y+m[11]*z}
 end
@@ -155,14 +155,14 @@ function m_x_m(a,b)
 end
 
 -- optimized matrix x vector multiply
-function m_x_v(m,v)
+function transform(m,v)
 	local x,y,z=v[1],v[2],v[3]
 	return {m[1]*x+m[5]*y+m[9]*z+m[13],m[2]*x+m[6]*y+m[10]*z+m[14],m[3]*x+m[7]*y+m[11]*z+m[15]}
 end
 
 -- optimized matrix x vector multiply
 -- excl. translation
-function m_x_n(m,v)
+function rotate(m,v)
 	local x,y,z=v[1],v[2],v[3]
 	return {m[1]*x+m[5]*y+m[9]*z,m[2]*x+m[6]*y+m[10]*z,m[3]*x+m[7]*y+m[11]*z}
 end
@@ -181,13 +181,7 @@ function make_m3(x,y,z)
 		0,0,z or 1,0,
 		0,0,0,1}
 end
-function m3_x_v(m,v)
-	return m_x_n(m,v)
-end
--- inplace matrix multiply invert
-function m3_inv_x_v(m,v)
-	return m_inv_x_n(m,v)
-end
+
 -- generic matrix inverse
 function m3_inv(me)
 	local te={
