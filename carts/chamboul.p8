@@ -83,6 +83,64 @@ function hitscan(boxes,a,b)
 	return closest_hit
 end
 
+
+function get_support(vertices,n)
+	local dmax,vmax=-32000
+	for _,v in pairs(vertices) do
+		-- !! invert normal !!
+		local d=-v_dot(v,n)
+		if d>dmax then
+			dmax=d
+			vmax=v
+		end
+	end
+	return vmax
+end
+
+function query_face_directions(a,b)
+	local ma,mb=a.m,b.m
+	-- B rotation in A space
+	local tx=m3_x_m3(m3_transpose(ma),b.m)
+	m_set_pos(tx,make_v(a.pos,b.pos))
+	-- cache B vertices
+	local vb={}
+	for i,v in pairs(b.model.v) do
+		vb[i]=transform(tx,v)
+	end
+
+	local dmax,fmax=-32000
+	for _,f in pairs(a.model.f) do
+		-- find face in B most opposed to current face
+		local v=get_support(vb,f.n)
+		local d=v_dot(f.n,v)-f.cp
+		if d>dmax then
+			dmax=d
+			fmax=f
+		end
+	end
+	return dmax,fmax
+end
+
+-- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
+-- https://www.gdcvault.com/play/1017646/Physics-for-Game-Programmers-The
+function overlap(a,b,out)
+	local adist,aface=query_face_directions(a,b)
+	if(adist>0) return
+	local bdist,bface=query_face_directions(b,a)
+	if(bdist>0) return
+	-- 
+
+	-- find minimum penetration
+	-- todo: check (why not max??)
+	--if adist>bdist then
+		out[aface]=adist
+	--else
+		out[bface]=bdist
+	--end
+
+	return true
+end
+
 -- creates a collision solver for:
 -- body
 -- normal
@@ -484,7 +542,7 @@ function draw_faces(faces,hit)
 	for i,d in ipairs(faces) do
 		-- todo: color ramp		
 		local c=8+8*d.light
-		if(hit and hit.face==d.face) c=8
+		if(hit and hit[d.face]) c=rnd(15)
 		polyfill(d,c)		
 	end
 end
@@ -563,6 +621,14 @@ function make_box(mass,extents,pos,q)
 	}
 end
 
+function make_picker()
+	local lmb=0
+	return {
+		update=function(self)			
+		end
+	}
+end
+
 -->8
 -- game loop
 function _init()
@@ -573,16 +639,22 @@ function _init()
 	_cam=make_cam({0,12,-40})
 
 	-- cube
-	add(_things,
-		make_rigidbody(
-			make_box(
-				1,{5,5,5},
-				{0,50,0},make_q(v_normz({rnd(),rnd(),rnd()},rnd())))))
-
-	_incident_box=make_box(
+	--add(_things,
+	--	make_rigidbody(
+	--		make_box(
+	--			1,{5,5,5},
+	--			{0,50,0},make_q(v_normz({rnd(),rnd(),rnd()},rnd())))))
+--
+	_a_box=make_box(
 		1,{5,5,5},
-		{20,0,0},make_q(v_up,0))
-	add(_things,_incident_box)
+		{-5,0,0},
+		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+		)
+	_b_box=make_box(
+		1,{5,5,5},
+		{10,0,0},make_q(v_up,0.1))
+	add(_things,_a_box)
+	add(_things,_b_box)
 
 	-- floor
 	_ground=make_box(0,{500,1,500},{0,-0.5,0},make_q(v_up,0))
@@ -596,6 +668,15 @@ function _update()
 	-- _incident_box.pos=v_add(_cam.pos,{m[3],m[7],m[11]},35)
 	-- _incident_box.m=m3_transpose({unpack(m)})
 	-- m_set_pos(_incident_box.m,_incident_box.pos)
+
+	--local m=m_from_q(make_q(v_up,time()/8))
+	_b_box.pos={0,10*cos(time()/4),0}
+	m_set_pos(_b_box.m,_b_box.pos)
+	
+
+	--local m=m_from_q(make_q(v_up,time()/4))
+	--m_set_pos(m,_a_box.pos)
+	--_a_box.m=m
 
     world:update()
 	
@@ -613,19 +694,10 @@ function _draw()
 
 	sort(out)
 
-
-	-- 
-	local m=_cam.m
-	local hit=hitscan(_things,_cam.pos,v_add(_cam.pos,{m[3],m[7],m[11]},35))
-
-    draw_faces(out,hit)
-
-	if hit then
-		local x,y,w=_cam:project2d(transform(hit.owner.m,hit))
-		if x then
-			circfill(x,y,w/2,7)
-		end			
+	local ohit={}
+	if overlap(_a_box,_b_box,ohit) then
+		print("touch!",2,2,8)
 	end
-
+    draw_faces(out,ohit)
 end
 
