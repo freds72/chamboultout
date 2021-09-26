@@ -100,8 +100,16 @@ end
 function query_face_directions(a,b)
 	local ma,mb=a.m,b.m
 	-- B rotation in A space
-	local tx=m3_x_m3(m3_transpose(ma),b.m)
-	m_set_pos(tx,make_v(a.pos,b.pos))
+	local tx=m_x_m(
+		m3_transpose(a.m),{
+		1,0,0,0,
+		0,1,0,0,
+		0,0,1,0,
+		-a.pos[1],-a.pos[2],-a.pos[3],1})
+	tx=m_x_m(tx,b.m)
+
+	--local tx=m3_x_m3(m3_transpose(ma),b.m)
+	--m_set_pos(tx,make_v(a.pos,b.pos))
 	-- cache B vertices
 	local vb={}
 	for i,v in pairs(b.model.v) do
@@ -121,6 +129,107 @@ function query_face_directions(a,b)
 	return dmax,fmax
 end
 
+function is_minkowski_face(a,b,c,d)
+	local bxa,dxc=v_cross(b,a),v_cross(d,c)
+	local cba,dba,adc,bdc=v_dot(c,bxa),v_dot(d,bxa),v_dot(a,dxc),v_dot(b,dxc)
+	return cba*dba<0 and adc*bdc<0 and cba*bdc>0
+end
+
+function build_minkowski_face(ea,eb,tx)
+	local bn1,bn2=rotate(tx,eb.normals[1].n),rotate(tx,eb.normals[2].n)
+	v_scale(bn1,-1)
+	v_scale(bn2,-1)
+	return is_minkowski_face(ea.normals[1].n,ea.normals[2].n,bn1,bn2)
+end
+
+function query_edge_direction(a,b)
+	local ma,mb=a.m,b.m
+	-- B rotation in A space
+	--local tx=m3_x_m3(m3_transpose(ma),b.m)
+	--m_set_pos(tx,make_v(a.pos,b.pos))
+	--
+	local tx=m_x_m(
+		m3_transpose(a.m),{
+		1,0,0,0,
+		0,1,0,0,
+		0,0,1,0,
+		-a.pos[1],-a.pos[2],-a.pos[3],1})
+	tx=m_x_m(tx,b.m)
+	-- cache B vertices
+	-- local vb={}
+	-- for i,v in pairs(b.model.v) do
+	-- 	vb[i]=transform(tx,v)
+	-- end
+
+	local averts,bverts=a.model.v,b.model.v
+	local dmax,eamax,ebmax=-32000
+	for _,ea in pairs(a.model.e) do
+		for _,eb in pairs(b.model.e) do	
+			local ebdir=rotate(tx,eb.direction)
+			-- parallel edges?
+			if(abs(v_dot(ea.direction,ebdir))>0.99) goto parallel
+
+			-- intersection = minkowski face
+			if build_minkowski_face(ea,eb,tx) then
+				local axis=v_normz(v_cross(ea.direction,ebdir))
+				local eahead=averts[ea.head]
+				-- a origin is 0
+				if v_dot(axis,eahead)<0 then
+					v_scale(axis,-1)
+				end
+				local d=v_dot(axis,make_v(eahead,transform(tx,bverts[eb.head])))
+				if d>dmax then
+					dmax=d
+					eamax=ea
+					ebmax=eb
+					--
+					-- draw_edge(
+					-- 	transform(a.m,averts[ea.head]),
+					-- 	transform(a.m,averts[ea.tail]),7)
+					-- local b0,b1=bverts[eb.head],bverts[eb.tail]
+					-- -- local ab=make_v(a.pos,b.pos)
+					-- -- b world space rotation
+					-- -- rebase pos to a
+					-- --b0,b1=
+					-- --	v_add(rotate(b.m,b0),ab),
+					-- --	v_add(rotate(b.m,b1),ab)
+					-- ---- position in A space
+					-- --b0,b1=
+					-- --	rotate_inv(a.m,b0),
+					-- --	rotate_inv(a.m,b1),
+					-- --draw_edge(
+					-- --	transform(a.m,transform(a.m,b0)),
+					-- --	transform(a.m,transform(a.m,b1)),11)
+					-- draw_edge(
+					-- 	transform(a.m,transform(tx,b0)),
+					-- 	transform(a.m,transform(tx,b1)),11)
+					-- flip()
+				end
+			end			
+			
+			--[[
+			local axis=v_normz(v_cross(ea.direction,ebdir))
+			local eahead=averts[ea.head]
+			-- a origin is 0
+			if v_dot(axis,eahead)<0 then
+				v_scale(axis,-1)
+			end
+			-- plane a
+			local adist=v_dot(ea.direction,eahead)
+			local v=get_support(vb,axis) -- -1 in function
+			local d=v_dot(axis,v)-adist
+			if d>dmax then
+				dmax=d
+				eamax=ea
+				ebmax=eb
+			end
+			]]
+::parallel::			
+		end
+	end
+	return dmax,eamax,ebmax
+end
+
 -- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
 -- https://www.gdcvault.com/play/1017646/Physics-for-Game-Programmers-The
 function overlap(a,b,out)
@@ -128,15 +237,33 @@ function overlap(a,b,out)
 	if(adist>0) return
 	local bdist,bface=query_face_directions(b,a)
 	if(bdist>0) return
+
+	local edist,ea,eb=query_edge_direction(a,b)
+	if(edist>0) return
+	--if(true)return 
 	-- 
 
-	-- find minimum penetration
-	-- todo: check (why not max??)
-	--if adist>bdist then
-		out[aface]=adist
-	--else
-		out[bface]=bdist
-	--end
+
+	--printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
+	if 0.95*edist>max(adist,bdist)+0.01 then
+		printh(tostr(time()).."\t edge contact")
+		out.edge=edist
+		-- transform edge in world space
+		out[1]={
+			head=transform(a.m,a.model.v[ea.head]),
+			tail=transform(a.m,a.model.v[ea.tail])}
+		out[2]={
+			head=transform(b.m,b.model.v[eb.head]),
+			tail=transform(b.m,b.model.v[eb.tail])}
+	else
+		if 0.95*bdist > adist+0.01 then
+			printh(tostr(time()).."\t face B contact")
+			out[bface]=bdist
+		else
+			printh(tostr(time()).."\t face A contact")
+			out[aface]=adist
+		end
+	end
 
 	return true
 end
@@ -541,9 +668,9 @@ end
 function draw_faces(faces,hit)
 	for i,d in ipairs(faces) do
 		-- todo: color ramp		
-		local c=8+8*d.light
-		if(hit and hit[d.face]) c=rnd(15)
-		polyfill(d,c)		
+		if(hit and hit[d.face]) polyfill(d,rnd(15))		
+		-- polyfill(d,c)		
+		polyline(d,1)
 	end
 end
 
@@ -566,8 +693,7 @@ function make_box(mass,extents,pos,q)
 	ex/=2
 	ey/=2
 	ez/=2
-	local model={
-		v={
+	local verts={
 			split"-1,-1,-1",
 			split"1,-1,-1",
 			split"1,-1,1",
@@ -576,9 +702,8 @@ function make_box(mass,extents,pos,q)
 			split"1, 1,-1",
 			split"1, 1,1",
 			split"-1, 1,1",
-		},
-		-- faces
-		f={
+		}
+	local faces={
 			split"4,3,2,1",
 			split"1,2,6,5",
 			split"2,3,7,6",
@@ -586,16 +711,38 @@ function make_box(mass,extents,pos,q)
 			split"4,1,5,8",
 			split"5,6,7,8"
 		}
+	local model={
+		v=verts,
+		-- faces
+		f=faces,
+		e={
+			-- bottom loop
+			{tail=1,head=2,direction={1,0,0} ,normals={faces[1],faces[2]}},
+			{tail=2,head=3,direction={0,0,1} ,normals={faces[1],faces[3]}},
+			{tail=3,head=4,direction={-1,0,0},normals={faces[1],faces[4]}},
+			{tail=4,head=1,direction={0,0,-1},normals={faces[1],faces[5]}},
+			-- support edges
+			{tail=1,head=5,direction=v_up,normals={faces[2],faces[5]}},
+			{tail=2,head=6,direction=v_up,normals={faces[3],faces[2]}},
+			{tail=3,head=7,direction=v_up,normals={faces[4],faces[3]}},
+			{tail=4,head=8,direction=v_up,normals={faces[5],faces[4]}},
+			-- top loop
+			{tail=5,head=6,direction={1,0,0} ,normals={faces[2],faces[6]}},
+			{tail=6,head=7,direction={0,0,1} ,normals={faces[3],faces[6]}},
+			{tail=7,head=8,direction={-1,0,0},normals={faces[4],faces[6]}},
+			{tail=8,head=5,direction={0,0,-1},normals={faces[5],faces[6]}}
+		}
 	}
-	for _,v in pairs(model.v) do
+	for _,v in pairs(verts) do
 		v[1]*=ex
 		v[2]*=ey
 		v[3]*=ez
 	end
-	for _,f in pairs(model.f) do
+	
+	for _,f in pairs(faces) do
 		-- de-reference vertex indices
 		for i=1,4 do
-			f[i]=model.v[f[i]]
+			f[i]=verts[f[i]]
 		end
 
 		-- normal
@@ -636,7 +783,7 @@ function _init()
 	-- enable lock+button alias
 	poke(0x5f2d,7)
 
-	_cam=make_cam({0,12,-40})
+	_cam=make_cam({0,8,-40})
 
 	-- cube
 	--add(_things,
@@ -647,12 +794,18 @@ function _init()
 --
 	_a_box=make_box(
 		1,{5,5,5},
-		{-5,0,0},
-		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-		)
+		{0,0,0},
+		--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+		make_q(v_up,0.125)
+	)
 	_b_box=make_box(
-		1,{5,5,5},
-		{10,0,0},make_q(v_up,0.1))
+		1,{10,10,10},
+		{6.5,0,0},
+		--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+		q_x_q(
+			make_q({1,0,0},0.125),
+			make_q({0,1,0},0.125))
+	)
 	add(_things,_a_box)
 	add(_things,_b_box)
 
@@ -669,18 +822,30 @@ function _update()
 	-- _incident_box.m=m3_transpose({unpack(m)})
 	-- m_set_pos(_incident_box.m,_incident_box.pos)
 
-	--local m=m_from_q(make_q(v_up,time()/8))
-	_b_box.pos={0,10*cos(time()/4),0}
-	m_set_pos(_b_box.m,_b_box.pos)
-	
-
-	--local m=m_from_q(make_q(v_up,time()/4))
-	--m_set_pos(m,_a_box.pos)
-	--_a_box.m=m
+	 local rot_axis=v_normz({1,1,0})	
+	 local m=m_from_q(make_q(v_up,time()/8))
+	_b_box.pos={0,10*cos(time()/16),0}
+	 m_set_pos(m,_b_box.pos)
+	 _b_box.m=m
+-- 
+	local m=m_from_q(
+		q_x_q(
+			make_q(rot_axis,time()/4),
+			make_q(v_up,time()/16)))
+	m_set_pos(m,_a_box.pos)
+	_a_box.m=m
 
     world:update()
 	
 	time_t+=1
+end
+
+function draw_edge(a,b,c)
+	local x0,y0,w0=_cam:project2d(a)
+	local x1,y1,w1=_cam:project2d(b)
+	if w0 and w1 then
+		line(x0,y0,x1,y1,c)
+	end
 end
 
 function _draw()
@@ -696,8 +861,12 @@ function _draw()
 
 	local ohit={}
 	if overlap(_a_box,_b_box,ohit) then
-		print("touch!",2,2,8)
+		print("touch: "..(ohit.edge and "edges" or "faces"),2,2,8)
 	end
     draw_faces(out,ohit)
+	if ohit.edge then
+		draw_edge(ohit[1].head,ohit[1].tail,8)
+		draw_edge(ohit[2].head,ohit[2].tail,2)
+	end
 end
 

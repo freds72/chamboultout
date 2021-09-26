@@ -240,8 +240,7 @@ function q_normz(q)
 	end
 end
 function q_dydt(q,v,dt)
-	local dq={v[1]*dt,v[2]*dt,v[3]*dt,0}
-	q_x_q(dq,q)
+	local dq=q_x_q({v[1]*dt,v[2]*dt,v[3]*dt,0},q)
 
 	q[1]+=0.5*dq[1]
 	q[2]+=0.5*dq[2]
@@ -254,10 +253,11 @@ function q_x_q(a,b)
 	local qax,qay,qaz,qaw=a[1],a[2],a[3],a[4]
 	local qbx,qby,qbz,qbw=b[1],b[2],b[3],b[4]
         
-	a[1]=qax*qbw+qaw*qbx+qay*qbz-qaz*qby
-	a[2]=qay*qbw+qaw*qby+qaz*qbx-qax*qbz
-	a[3]=qaz*qbw+qaw*qbz+qax*qby-qay*qbx
-	a[4]=qaw*qbw-qax*qbx-qay*qby-qaz*qbz
+	return {
+		qax*qbw+qaw*qbx+qay*qbz-qaz*qby,
+		qay*qbw+qaw*qby+qaz*qbx-qax*qbz,
+		qaz*qbw+qaw*qbz+qax*qby-qay*qbx,
+		qaw*qbw-qax*qbx-qay*qby-qaz*qbz}
 end
 
 function m_from_q(q)

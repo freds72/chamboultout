@@ -27,9 +27,12 @@ function polyfill(p,col)
 		--break
 		x0,y0=_x1,_y1
 	end
+end
 
+function polyline(p,c)	
 	-- outline
-	color(1)
+	color(c)
+	local p0=p[#p]
 	local x0,y0=p0.x,p0.y
 	for i=1,#p do
 		local p1=p[i]
