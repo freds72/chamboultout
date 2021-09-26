@@ -240,14 +240,11 @@ function overlap(a,b,out)
 
 	local edist,ea,eb=query_edge_direction(a,b)
 	if(edist>0) return
-	--if(true)return 
-	-- 
 
-
-	--printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
+	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
 	if 0.95*edist>max(adist,bdist)+0.01 then
-		printh(tostr(time()).."\t edge contact")
-		out.edge=edist
+		--printh(tostr(time()).."\t edge contact")
+		out.edges={ea,eb}				
 		-- transform edge in world space
 		out[1]={
 			head=transform(a.m,a.model.v[ea.head]),
@@ -257,12 +254,52 @@ function overlap(a,b,out)
 			tail=transform(b.m,b.model.v[eb.tail])}
 	else
 		if 0.95*bdist > adist+0.01 then
-			printh(tostr(time()).."\t face B contact")
-			out[bface]=bdist
+			--printh(tostr(time()).."\t face B contact")
+			out.reference=b
+			out.incident=a
+			out.reference_face=bface
+			out.flip=true			
 		else
-			printh(tostr(time()).."\t face A contact")
-			out[aface]=adist
+			--printh(tostr(time()).."\t face A contact")
+			out.reference=a
+			out.incident=b
+			out.reference_face=aface				
 		end
+		-- find incident face
+		local n=rotate(out.reference.m,out.reference_face.n)
+		out.incident_face=out.incident:incident_face(n)
+		-- clip incident with reference sides
+		local contacts={}
+		local tx=m_x_m(
+			m3_transpose(out.reference.m),{
+			1,0,0,0,
+			0,1,0,0,
+			0,0,1,0,
+			-out.reference.pos[1],-out.reference.pos[2],-out.reference.pos[3],1})
+		tx=m_x_m(tx,out.incident.m)
+		-- convert incident face point into reference space
+		for i=1,4 do
+			add(contacts,transform(tx,out.incident_face[i]))
+		end
+		for _,v in pairs(contacts) do
+			local x0,y0,w0=_cam:project2d(transform(out.reference.m,v))
+			circ(x0,y0,4,9)
+		end
+		for _,side in pairs(out.reference_face.sides) do
+			contacts=axis_poly_clip(
+				side.axis,
+				side.sign*out.reference.extents[side.axis],
+				contacts,
+				-side.sign)	
+		end
+	
+		-- draw contacts
+		for _,v in pairs(contacts) do
+			local x0,y0,w0=_cam:project2d(transform(out.reference.m,v))
+			circfill(x0,y0,2,7)
+		end
+		flip()
+
 	end
 
 	return true
@@ -333,7 +370,7 @@ function make_rigidbody(a)
 	local force,torque=v_zero(),v_zero()
 	
 	-- compute inertia tensor
-	local size=v_clone(a.e)
+	local size=v_clone(a.extents)
 	v_scale(size,2)
 	size=v_sqr(size)
 	local ibody=make_m3(size[2]+size[3],size[1]+size[3],size[1]+size[2])
@@ -575,26 +612,25 @@ function make_cam(pos)
 	}
 end
 
--- clipping
-function z_poly_clip(znear,v)
+function axis_poly_clip(axis,dist,v,sign)
+	sign=sign or 1
 	local res,v0={},v[#v]
-	local d0=v0[3]-znear
+	local d0=sign*(v0[axis]-dist)
 	for i=1,#v do
 		local v1=v[i]
-		local d1=v1[3]-znear
+		local d1=sign*(v1[axis]-dist)
 		if d1>0 then
 			if d0<=0 then
 				local nv=v_lerp(v0,v1,d0/(d0-d1))
-				-- znear = 1
-				nv.x=64+nv[1]*64
-				nv.y=64-nv[2]*64
+				-- "fixes" clipping
+				nv[axis]=dist
 				res[#res+1]=nv
 			end
 			res[#res+1]=v1
 		elseif d0>0 then
 			local nv=v_lerp(v0,v1,d0/(d0-d1))
-			nv.x=64+nv[1]*64
-			nv.y=64-nv[2]*64
+			-- "fixes" clipping
+			nv[axis]=dist
 			res[#res+1]=nv
 		end
 		v0=v1
@@ -642,33 +678,45 @@ function collect_faces(model,m,out)
 	local v_cache=setmetatable({m=m_x_m(_cam.m,m)},v_cache_cls)
 
 	for _,face in pairs(model.f) do
-		if v_dot(face.n,cam_pos)>face.cp then
+		-- if v_dot(face.n,cam_pos)>face.cp then
 			-- project vertices (always 4!!)
 			local v0,v1,v2,v3=v_cache[face[1]],v_cache[face[2]],v_cache[face[3]],v_cache[face[4]]
 			-- mix of near/far verts?
 			if v0.outcode&v1.outcode&v2.outcode&v3.outcode==0 then
 				local verts={v0,v1,v2,v3}
 				-- mix of near+far vertices?
-				if((v0.outcode|v1.outcode|v2.outcode|v3.outcode)&2!=0) verts=z_poly_clip(z_near,verts)
+				if (v0.outcode|v1.outcode|v2.outcode|v3.outcode)&2!=0 then
+					verts=axis_poly_clip(3,z_near,verts)
+					-- project
+					for _,v in pairs(verts) do
+						local w=64/v[3]
+						v.x=64+v[1]*w
+						v.y=64-v[2]*w
+					end
+				end
 				if #verts>2 then
 					verts.face=face
 					verts.light=mid(-v_dot(sun,face.n),0,1)
 					-- sort key
 					-- todo: improve
 					verts.key=(v0.w+v1.w+v2.w+v3.w)/4
+					verts.visible=v_dot(face.n,cam_pos)>face.cp
 					out[#out+1]=verts
 				end
 			end
-		end
-		::skip::
+		--end
+::skip::
 	end
 end
 
 -- draw face
 function draw_faces(faces,hit)
 	for i,d in ipairs(faces) do
-		-- todo: color ramp		
-		if(hit and hit[d.face]) polyfill(d,rnd(15))		
+		-- todo: color ramp	
+		fillp()
+		if(not d.visible) fillp(0xa5a5.8)
+		if(hit and hit.reference_face==d.face) polyfill(d,11)		
+		if(hit and hit.incident_face==d.face) polyfill(d,8)		
 		-- polyfill(d,c)		
 		polyline(d,1)
 	end
@@ -703,13 +751,14 @@ function make_box(mass,extents,pos,q)
 			split"1, 1,1",
 			split"-1, 1,1",
 		}
-	local faces={
-			split"4,3,2,1",
-			split"1,2,6,5",
-			split"2,3,7,6",
-			split"3,4,8,7",
-			split"4,1,5,8",
-			split"5,6,7,8"
+	local faces={	
+			-- edges + normal axis direction (- to indicate sign)		
+			split"4,3,2,1,-2",
+			split"1,2,6,5,-3",
+			split"2,3,7,6,1",
+			split"3,4,8,7,3",
+			split"4,1,5,8,-1",
+			split"5,6,7,8,2"
 		}
 	local model={
 		v=verts,
@@ -744,7 +793,17 @@ function make_box(mass,extents,pos,q)
 		for i=1,4 do
 			f[i]=verts[f[i]]
 		end
-
+		-- index (and sign of )
+		local axis=deli(f,5)
+		f.axis=abs(axis)
+		f.sign=sgn(axis)
+		-- find sides
+		local sides={}
+		for _,e in pairs(model.e) do
+			if(e.normals[1]==f) add(sides,e.normals[2])
+			if(e.normals[2]==f) add(sides,e.normals[1])
+		end
+		f.sides=sides
 		-- normal
 		f.n=v_normz(
 				v_cross(
@@ -760,7 +819,7 @@ function make_box(mass,extents,pos,q)
 	return {
 		mass=mass,
 		hardness=0.1,
-		e={ex,ey,ez},
+		extents={ex,ey,ez},
 		model=model,
 		pos=v_clone(pos),
 		q=q_clone(q),
@@ -792,20 +851,21 @@ function _init()
 	--			1,{5,5,5},
 	--			{0,50,0},make_q(v_normz({rnd(),rnd(),rnd()},rnd())))))
 --
-	_a_box=make_box(
+	_a_box=make_rigidbody(make_box(
 		1,{5,5,5},
-		{0,0,0},
+		{6,3,0},
 		--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
 		make_q(v_up,0.125)
-	)
-	_b_box=make_box(
-		1,{10,10,10},
-		{6.5,0,0},
+	))
+	_b_box=make_rigidbody(make_box(
+		1,{10,5,10},
+		{0,0,0},
+		make_q(v_up,0.125)
 		--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-		q_x_q(
-			make_q({1,0,0},0.125),
-			make_q({0,1,0},0.125))
-	)
+		--q_x_q(
+		--	make_q({1,0,0},0.125),
+		--	make_q({0,1,0},0.125))
+	))
 	add(_things,_a_box)
 	add(_things,_b_box)
 
@@ -822,20 +882,22 @@ function _update()
 	-- _incident_box.m=m3_transpose({unpack(m)})
 	-- m_set_pos(_incident_box.m,_incident_box.pos)
 
-	 local rot_axis=v_normz({1,1,0})	
-	 local m=m_from_q(make_q(v_up,time()/8))
-	_b_box.pos={0,10*cos(time()/16),0}
-	 m_set_pos(m,_b_box.pos)
-	 _b_box.m=m
+	local rot_axis=v_normz({1,1,0})	
+	-- local m=m_from_q(make_q(v_up,time()/8))
+	-- _b_box.pos={0,10*cos(time()/16),0}
+	-- m_set_pos(m,_b_box.pos)
+	--_b_box.m=m
 -- 
 	local m=m_from_q(
 		q_x_q(
-			make_q(rot_axis,time()/4),
+			make_q(rot_axis,time()/32),
 			make_q(v_up,time()/16)))
+	--local m=m_from_q(make_q(v_up,time()/16))
+	_a_box.pos={10*cos(time()/16),3,0}
 	m_set_pos(m,_a_box.pos)
 	_a_box.m=m
 
-    world:update()
+    --world:update()
 	
 	time_t+=1
 end
@@ -861,10 +923,10 @@ function _draw()
 
 	local ohit={}
 	if overlap(_a_box,_b_box,ohit) then
-		print("touch: "..(ohit.edge and "edges" or "faces"),2,2,8)
+		print("touch: "..(ohit.edges and "edges" or "faces"),2,2,8)
 	end
     draw_faces(out,ohit)
-	if ohit.edge then
+	if ohit.edges then
 		draw_edge(ohit[1].head,ohit[1].tail,8)
 		draw_edge(ohit[2].head,ohit[2].tail,2)
 	end
