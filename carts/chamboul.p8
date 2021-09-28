@@ -41,7 +41,7 @@ function hitscan(boxes,a,b)
 		-- reset starting points for the next convex space
 		local p0,p1,hit=aa,bb
 		for _,face in pairs(box.model.f) do
-			local plane_dist=face.cp
+			local plane_dist=face.dist
 			local dist,otherdist=v_dot(face.n,p0),v_dot(face.n,p1)
 			local side,otherside=dist>plane_dist,otherdist>plane_dist
 			-- outside of convex space
@@ -120,7 +120,7 @@ function query_face_directions(a,b)
 	for _,f in pairs(a.model.f) do
 		-- find face in B most opposed to current face
 		local v=get_support(vb,f.n)
-		local d=v_dot(f.n,v)-f.cp
+		local d=v_dot(f.n,v)-f.dist
 		if d>dmax then
 			dmax=d
 			fmax=f
@@ -142,8 +142,33 @@ function build_minkowski_face(ea,eb,tx)
 	return is_minkowski_face(ea.normals[1].n,ea.normals[2].n,bn1,bn2)
 end
 
+function find_edge_closest_points(p1,q1,p2,q2)	
+	local s,t=0,0
+	local p1,q1,p2,q2=v_clone(p1),v_clone(q1),v_clone(p2),v_clone(q2)
+	-- avoid overflow
+	v_scale(p1,1/16)
+	v_scale(q1,1/16)
+	v_scale(p2,1/16)
+	v_scale(q2,1/16)
+	local d1,d2=make_v(p1,q1),make_v(p2,q2)
+	local r=make_v(p1,p2)
+	local a=v_dot(d1,d1)
+	local e=v_dot(d2,d2)
+	local f=v_dot(d2,r)
+	local c=v_dot(d1,r)
+	local b=v_dot(d1,d2)
+	local denom=a*e-b*b
+	local s=(b*f-c*e)/denom
+	local t=(b*s+f)/e
+
+	local c1,c2=v_add(p1,d1,-s),v_add(p2,d2,-t)
+	v_scale(c1,16)
+	v_scale(c2,16)
+	return c1,c2
+end
+
 function query_edge_direction(a,b)
-	local ma,mb=a.m,b.m
+	-- local ma,mb=a.m,b.m
 	-- B rotation in A space
 	--local tx=m3_x_m3(m3_transpose(ma),b.m)
 	--m_set_pos(tx,make_v(a.pos,b.pos))
@@ -162,8 +187,9 @@ function query_edge_direction(a,b)
 	-- end
 
 	local averts,bverts=a.model.v,b.model.v
-	local dmax,eamax,ebmax=-32000
+	local dmax,closest_pair=-32000,{}
 	for _,ea in pairs(a.model.e) do
+		local eahead=averts[ea.head]
 		for _,eb in pairs(b.model.e) do	
 			local ebdir=rotate(tx,eb.direction)
 			-- parallel edges?
@@ -172,16 +198,25 @@ function query_edge_direction(a,b)
 			-- intersection = minkowski face
 			if build_minkowski_face(ea,eb,tx) then
 				local axis=v_normz(v_cross(ea.direction,ebdir))
-				local eahead=averts[ea.head]
 				-- a origin is 0
 				if v_dot(axis,eahead)<0 then
 					v_scale(axis,-1)
 				end
-				local d=v_dot(axis,make_v(eahead,transform(tx,bverts[eb.head])))
+				local ebhead=transform(tx,bverts[eb.head])
+				local d=v_dot(axis,make_v(eahead,ebhead))
 				if d>dmax then
 					dmax=d
-					eamax=ea
-					ebmax=eb
+					closest_pair.dist=d
+					closest_pair.ea=ea
+					closest_pair.eb=eb
+
+					-- find closest point
+					local c1,c2=find_edge_closest_points(
+						eahead,averts[ea.tail],
+						ebhead,transform(tx,bverts[eb.tail]))
+					closest_pair.c1=c1
+					closest_pair.c2=c2
+					closest_pair.n=axis
 					--
 					-- draw_edge(
 					-- 	transform(a.m,averts[ea.head]),
@@ -227,7 +262,7 @@ function query_edge_direction(a,b)
 ::parallel::			
 		end
 	end
-	return dmax,eamax,ebmax
+	return dmax,closest_pair
 end
 
 -- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
@@ -238,38 +273,49 @@ function overlap(a,b,out)
 	local bdist,bface=query_face_directions(b,a)
 	if(bdist>0) return
 
-	local edist,ea,eb=query_edge_direction(a,b)
+	local edist,closest_edges=query_edge_direction(a,b)
 	if(edist>0) return
 
 	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
+	local contacts={}
+	out.contacts=contacts
 	if 0.95*edist>max(adist,bdist)+0.01 then
 		--printh(tostr(time()).."\t edge contact")
-		out.edges={ea,eb}				
+		local ea,eb=closest_edges.ea,closest_edges.eb
+		out.edges={ea,eb}	
+		out.reference=a
+		out.incident=b
+		out.n=closest_edges.n
+		local c=v_add(closest_edges.c1,closest_edges.c2)
+		v_scale(c,0.5)
+		add(contacts,c)			
 		-- transform edge in world space
-		out[1]={
-			head=transform(a.m,a.model.v[ea.head]),
-			tail=transform(a.m,a.model.v[ea.tail])}
-		out[2]={
-			head=transform(b.m,b.model.v[eb.head]),
-			tail=transform(b.m,b.model.v[eb.tail])}
+		-- debug
+		draw_edge(
+			transform(a.m,a.model.v[ea.head]),
+			transform(a.m,a.model.v[ea.tail]),11)
+		draw_edge(
+			transform(b.m,b.model.v[eb.head]),
+			transform(b.m,b.model.v[eb.tail]),8)
 	else
 		if 0.95*bdist > adist+0.01 then
 			--printh(tostr(time()).."\t face B contact")
 			out.reference=b
 			out.incident=a
 			out.reference_face=bface
-			out.flip=true			
+			out.flip=true
+			out.n=bface.n	
 		else
 			--printh(tostr(time()).."\t face A contact")
 			out.reference=a
 			out.incident=b
-			out.reference_face=aface				
+			out.reference_face=aface	
+			out.n=aface.n
 		end
 		-- find incident face
 		local n=rotate(out.reference.m,out.reference_face.n)
 		out.incident_face=out.incident:incident_face(n)
 		-- clip incident with reference sides
-		local contacts={}
 		local tx=m_x_m(
 			m3_transpose(out.reference.m),{
 			1,0,0,0,
@@ -277,30 +323,41 @@ function overlap(a,b,out)
 			0,0,1,0,
 			-out.reference.pos[1],-out.reference.pos[2],-out.reference.pos[3],1})
 		tx=m_x_m(tx,out.incident.m)
-		-- convert incident face point into reference space
+		-- convert incident face into reference space
 		for i=1,4 do
 			add(contacts,transform(tx,out.incident_face[i]))
-		end
-		for _,v in pairs(contacts) do
-			local x0,y0,w0=_cam:project2d(transform(out.reference.m,v))
-			circ(x0,y0,4,9)
 		end
 		for _,side in pairs(out.reference_face.sides) do
 			contacts=axis_poly_clip(
 				side.axis,
-				side.sign*out.reference.extents[side.axis],
+				side.sign*side.dist,
 				contacts,
 				-side.sign)	
 		end
-	
-		-- draw contacts
-		for _,v in pairs(contacts) do
-			local x0,y0,w0=_cam:project2d(transform(out.reference.m,v))
-			circfill(x0,y0,2,7)
+		-- keep only points under the reference plane
+		local side=out.reference_face
+		for i=#contacts,1,-1 do
+			local v=contacts[i]
+			local dist=v_dot(side.n,v)-side.dist
+			if dist<0 then
+				v.dist=dist
+			else
+				-- invalid contact
+				deli(contacts,i)
+			end
 		end
-		flip()
-
 	end
+	---- draw contacts
+	fillp()
+	for _,v in pairs(contacts) do
+		local x0,y0,w0=_cam:project2d(transform(out.reference.m,v))
+		circfill(x0,y0,1,7)
+
+		local n=v_add(v,out.n,4)
+		local x1,y1,w1=_cam:project2d(transform(out.reference.m,n))
+		line(x0,y0,x1,y1,5)
+	end
+	flip()
 
 	return true
 end
@@ -678,7 +735,7 @@ function collect_faces(model,m,out)
 	local v_cache=setmetatable({m=m_x_m(_cam.m,m)},v_cache_cls)
 
 	for _,face in pairs(model.f) do
-		-- if v_dot(face.n,cam_pos)>face.cp then
+		-- if v_dot(face.n,cam_pos)>face.dist then
 			-- project vertices (always 4!!)
 			local v0,v1,v2,v3=v_cache[face[1]],v_cache[face[2]],v_cache[face[3]],v_cache[face[4]]
 			-- mix of near/far verts?
@@ -700,7 +757,7 @@ function collect_faces(model,m,out)
 					-- sort key
 					-- todo: improve
 					verts.key=(v0.w+v1.w+v2.w+v3.w)/4
-					verts.visible=v_dot(face.n,cam_pos)>face.cp
+					verts.visible=v_dot(face.n,cam_pos)>face.dist
 					out[#out+1]=verts
 				end
 			end
@@ -810,7 +867,7 @@ function make_box(mass,extents,pos,q)
 					make_v(f[1],f[4]),
 					make_v(f[1],f[2])))
 		-- fast viz check
-		f.cp=v_dot(f.n,f[1])
+		f.dist=v_dot(f.n,f[1])
 	end
 	-- initial condition
 	local m=m_from_q(q)
@@ -892,8 +949,9 @@ function _update()
 		q_x_q(
 			make_q(rot_axis,time()/32),
 			make_q(v_up,time()/16)))
-	--local m=m_from_q(make_q(v_up,time()/16))
-	_a_box.pos={10*cos(time()/16),3,0}
+	local m=m_from_q(make_q({0,0,1},time()/16))
+	-- local m=_a_box.m
+	_a_box.pos={7,5*cos(time()/16),0}
 	m_set_pos(m,_a_box.pos)
 	_a_box.m=m
 
@@ -926,9 +984,5 @@ function _draw()
 		print("touch: "..(ohit.edges and "edges" or "faces"),2,2,8)
 	end
     draw_faces(out,ohit)
-	if ohit.edges then
-		draw_edge(ohit[1].head,ohit[1].tail,8)
-		draw_edge(ohit[2].head,ohit[2].tail,2)
-	end
 end
 
