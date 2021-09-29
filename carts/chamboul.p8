@@ -285,8 +285,7 @@ function overlap(a,b)
 		out.reference=a
 		out.incident=b
 		out.n=rotate(a.m,closest_edges.n)
-		-- if(v_dot(make_v(a.pos,b.pos),out.n)<0) v_scale(out.n,-1)
-		v_scale(out.n,-1)
+		--if(v_dot(make_v(a.pos,b.pos),out.n)<0) v_scale(out.n,-1)
 		local c=transform(a.m,v_add(closest_edges.c1,closest_edges.c2))
 		v_scale(c,0.5)
 		c.dist=closest_edges.dist		
@@ -474,13 +473,13 @@ function make_rigidbody(a)
 	end
 
 	-- 
-	local g={0,-12*a.mass,0}
+	local g={0,-24*a.mass,0}
 	local rb={
 		i_inv=make_m3(),
 		v=v_zero(),
 		m=a.m,
 		w=v_zero(),
-		mass_inv=is_static and 0 or 1/a.mass,
+		mass_inv=is_static and 1 or 1/a.mass,
 		-- obj to world space
 		pt_toworld=function(self,p)
 			return transform(self.m,p)
@@ -949,9 +948,9 @@ function _init()
 
 	_a_box=make_rigidbody(make_box(
 		1,{5,5,5},
-		{5,10,0},
-		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-		--make_q(v_up,rd())
+		{0,8,0},
+		--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+		make_q(v_up,rnd())
 	))
 	_b_box=make_rigidbody(make_box(
 		0,{10,5,10},
