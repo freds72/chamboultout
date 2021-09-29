@@ -267,7 +267,7 @@ end
 
 -- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
 -- https://www.gdcvault.com/play/1017646/Physics-for-Game-Programmers-The
-function overlap(a,b,out)
+function overlap(a,b)
 	local adist,aface=query_face_directions(a,b)
 	if(adist>0) return
 	local bdist,bface=query_face_directions(b,a)
@@ -277,17 +277,19 @@ function overlap(a,b,out)
 	if(edist>0) return
 
 	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
-	local contacts={}
-	out.contacts=contacts
+	local out,contacts={},{}
 	if 0.95*edist>max(adist,bdist)+0.01 then
 		--printh(tostr(time()).."\t edge contact")
 		local ea,eb=closest_edges.ea,closest_edges.eb
 		out.edges={ea,eb}	
 		out.reference=a
 		out.incident=b
-		out.n=closest_edges.n
-		local c=v_add(closest_edges.c1,closest_edges.c2)
+		out.n=rotate(a.m,closest_edges.n)
+		-- if(v_dot(make_v(a.pos,b.pos),out.n)<0) v_scale(out.n,-1)
+		v_scale(out.n,-1)
+		local c=transform(a.m,v_add(closest_edges.c1,closest_edges.c2))
 		v_scale(c,0.5)
+		c.dist=closest_edges.dist		
 		add(contacts,c)			
 		-- transform edge in world space
 		-- debug
@@ -304,13 +306,13 @@ function overlap(a,b,out)
 			out.incident=a
 			out.reference_face=bface
 			out.flip=true
-			out.n=bface.n	
+			out.n=rotate(b.m,bface.n)
 		else
 			--printh(tostr(time()).."\t face A contact")
 			out.reference=a
 			out.incident=b
 			out.reference_face=aface	
-			out.n=aface.n
+			out.n=rotate(a.m,aface.n)
 		end
 		-- find incident face
 		local n=rotate(out.reference.m,out.reference_face.n)
@@ -328,6 +330,7 @@ function overlap(a,b,out)
 			add(contacts,transform(tx,out.incident_face[i]))
 		end
 		for _,side in pairs(out.reference_face.sides) do
+			if(#contacts==0) break			
 			contacts=axis_poly_clip(
 				side.axis,
 				side.sign*side.dist,
@@ -339,8 +342,11 @@ function overlap(a,b,out)
 		for i=#contacts,1,-1 do
 			local v=contacts[i]
 			local dist=v_dot(side.n,v)-side.dist
-			if dist<0 then
+			-- "deep" enough contact?
+			if dist<=0 then				
+				v=transform(out.reference.m,v)
 				v.dist=dist
+				contacts[i]=v
 			else
 				-- invalid contact
 				deli(contacts,i)
@@ -350,16 +356,17 @@ function overlap(a,b,out)
 	---- draw contacts
 	fillp()
 	for _,v in pairs(contacts) do
-		local x0,y0,w0=_cam:project2d(transform(out.reference.m,v))
+		local x0,y0,w0=_cam:project2d(v)
 		circfill(x0,y0,1,7)
 
 		local n=v_add(v,out.n,4)
-		local x1,y1,w1=_cam:project2d(transform(out.reference.m,n))
+		local x1,y1,w1=_cam:project2d(n)
 		line(x0,y0,x1,y1,5)
 	end
 	flip()
 
-	return true
+	out.contacts=contacts
+	return out
 end
 
 -- creates a collision solver for:
@@ -370,51 +377,74 @@ end
 function is_contact(a,p,n,d)
 	local padot=a:pt_velocity(p)
 	local vrel=v_dot(n,padot)
-	-- resting condition?
+	-- resting condition or separating
 	if(d<k_small and vrel>-k_small_v) return
- return true
+	return true
 end
-function make_contact_solver(a,p,n,d)
+function make_contact_solver(a,b,n,p,dist)
 	-- does nothing
-	if(not is_contact(a,p,n,d)) return
+	-- if(not is_contact(a,p,n,d)) return
 	local nimpulse=0
-	local ra=make_v(a.pos,p)
-	local racn=v_cross(ra,n)
+	local ra,rb=make_v(a.pos,p),make_v(b.pos,p)
+	local racn,rbcn=v_cross(ra,n),v_cross(rb,n)
 
-	local nm=a.mass_inv
-	nm+=v_dot(racn,rotate(a.i_inv,racn))
+	local nm=a.mass_inv+b.mass_inv
+	nm+=v_dot(racn,rotate(a.i_inv,racn))+v_dot(rbcn,rotate(b.i_inv,rbcn))
 	nm=1/nm
 	
 	-- baumgarte
-	local bias=-k_bias*max(d+k_slop)/time_dt
+	local bias=-k_bias*min(dist+k_slop)/time_dt
 
 	-- restitution bias
-	local dv=-v_dot(v_add(a.v,v_cross(a.omega,ra)),n)
+	local dv=
+		v_dot(
+			v_add(
+				v_add(b.v,v_cross(b.w,rb)),
+				v_add(a.v,v_cross(a.w,ra)),
+				-1),
+			n)
 	-- todo:find out unit??
 	if dv<-1 then
-		bias-=a.hardness*dv
+		bias-=max(a.hardness,b.hardness)*dv
 	end
-	
+
 	-- contact solver
 	return function()
-		local dv,n=v_add(a.v,v_cross(a.omega,ra)),v_clone(n)
+		local dv=
+			v_add(
+				v_add(b.v,v_cross(b.w,rb)),
+				v_add(a.v,v_cross(a.w,ra)),
+				-1)
+		
+		local vn=v_dot(dv,n)		
+		local lambda=nm*(-vn+bias)
 
-		local lambda=-nm*(v_dot(dv,n)+bias)
-	
-		local tempn,nimpulse=nimpulse,max(nimpulse+lambda)
+		local tempn=nimpulse
+		nimpulse=max(tempn+lambda)
 		lambda=nimpulse-tempn
 		
 		-- impulse too small?
-		if(lambda<k_small) return false
+		if(lambda<k_small) return
+
 		-- correct linear velocity
-		v_scale(n,lambda)
-		a.v=v_add(a.v,n,a.mass_inv)
+		local impulse=v_clone(n)
+		v_scale(impulse,lambda)
+		a.v=v_add(a.v,impulse,a.mass_inv,-1)
 		-- correct angular velocity
-		a.omega=v_add(
-			a.omega,
+		a.w=v_add(
+			a.w,
 			rotate(
 				a.i_inv,
-				v_cross(ra,n)
+				v_cross(ra,impulse)
+			),
+			-1)
+		b.v=v_add(b.v,impulse,b.mass_inv)
+		-- correct angular velocity
+		b.w=v_add(
+			b.w,
+			rotate(
+				b.i_inv,
+				v_cross(rb,impulse)
 			))
 		return true
 	end
@@ -425,31 +455,39 @@ end
 function make_rigidbody(a)
 	local bbox=a.model
 	local force,torque=v_zero(),v_zero()
-	
-	-- compute inertia tensor
-	local size=v_clone(a.extents)
-	v_scale(size,2)
-	size=v_sqr(size)
-	local ibody=make_m3(size[2]+size[3],size[1]+size[3],size[1]+size[2])
-	m_scale(ibody,a.mass/12)
-	
-	-- invert 
-	local ibody_inv=m3_inv(ibody)
+	local is_static=false
+
+	-- compute (inverse) inertia tensor
+	local ibody_inv
+	if a.mass>0 then
+		local size=v_clone(a.extents)
+		v_scale(size,2)
+		size=v_sqr(size)
+		local ibody=make_m3(size[2]+size[3],size[1]+size[3],size[1]+size[2])
+		m_scale(ibody,a.mass/12)
+		
+		-- invert 
+		ibody_inv=m3_inv(ibody)
+	else
+		is_static=true
+		ibody_inv=make_m3(0,0,0)
+	end
+
 	-- 
-	local g={0,-24*a.mass,0}
+	local g={0,-12*a.mass,0}
 	local rb={
 		i_inv=make_m3(),
 		v=v_zero(),
 		m=a.m,
-		omega=v_zero(),
-		mass_inv=1/a.mass,
+		w=v_zero(),
+		mass_inv=is_static and 0 or 1/a.mass,
 		-- obj to world space
 		pt_toworld=function(self,p)
 			return transform(self.m,p)
 		end,		
 		-- world velocity
 		pt_velocity=function(self,p)
-			return v_add(v_cross(self.omega,make_v(self.pos,p)),self.v)
+			return v_add(v_cross(self.w,make_v(self.pos,p)),self.v)
 		end,
 		incident_face=function(self,rn)
 			-- world to local (normal)
@@ -466,15 +504,19 @@ function make_rigidbody(a)
 		end,
 			-- register a force
 		add_force=function(self,f,p)
+			if(is_static) return
 			force=v_add(force,f,a.mass)
 			torque=v_add(torque,v_cross(make_v(self.pos,p),f))
 		end,
 		add_impulse=function(self,f,p)		 
+			if(is_static) return
 			self.v=v_add(self.v,f,self.mass_inv)
-			self.omega=v_add(self.omega,rotate(self.i_inv,v_cross(make_v(self.pos,p),f)))
+			self.w=v_add(self.w,rotate(self.i_inv,v_cross(make_v(self.pos,p),f)))
 		end,
 		-- apply forces & torque for iteration
 		prepare=function(self,dt)
+			if(is_static) return
+
 			-- add gravity
 			force=v_add(force,g)
 		
@@ -485,48 +527,25 @@ function make_rigidbody(a)
 			self.v=v_add(self.v,force,self.mass_inv*dt)
 	
 			-- angular velocity
-			self.omega=v_add(self.omega,rotate(self.i_inv,torque),dt)
+			self.w=v_add(self.w,rotate(self.i_inv,torque),dt)
 			
 			-- friction
 			v_scale(self.v,1/(1+dt*0.4))
-			v_scale(self.omega,1/(1+dt*0.6))
+			v_scale(self.w,1/(1+dt*0.6))
 		end,
 		integrate=function(self,dt)
+			if(is_static) return
+
 			self.pos=v_add(self.pos,self.v,dt)
-			q_dydt(self.q,self.omega,dt)
+			q_dydt(self.q,self.w,dt)
 			self.m=m_from_q(self.q)
 			--
 			m_set_pos(self.m,self.pos)
 
 			-- clear forces
 			force,torque=v_zero(),v_zero()
-		end,
-		update_contacts=function(self,contacts)
-			-- ground contacts against incident face
-			local f=self:incident_face(v_up)
-			for vi=1,4 do
-				local v=f[vi]				
-				-- to world space
-				local p=self:pt_toworld(v)
-				local h,n=0,{0,1,0}
-				local depth=h-p[2]
-				if depth>k_small then
-					depth=v_dot(n,{0,depth,0})
-					-- deep enough?
-					if depth>-k_small then
-						local ct=make_contact_solver(self,p,n,depth)
-						if ct then
-							add(contacts,ct)
-							-- record contact time
-							v.contact_t=time_t
-							v.n=n
-						end
-					end
-				end
-			end
 		end
 	}
-	
 	-- register rigid bodies
 	return add(physic_actors,setmetatable(a,{__index=rb}))
 end
@@ -534,18 +553,32 @@ end
 -- physic world
 function world:update()
 	local contacts={}
+	-- update bodies
 	for _,a in pairs(physic_actors) do
-		-- collect contacts
-		a:update_contacts(contacts)
 		a:prepare(time_dt)
 	end
-	
-	-- solve contacts
-	for _,c in pairs(contacts) do
-		-- multiple iterations
-		-- required to fix deep contacts
-		for i=1,5 do
-			if(c()==false) break
+
+	-- collect manifolds
+	for i=1,#physic_actors do
+		local a=physic_actors[i]
+		for j=i+1,#physic_actors do
+			local b=physic_actors[j]
+			local m=overlap(a,b)			
+			if m then
+				for _,p in pairs(m.contacts) do										
+					add(contacts,make_contact_solver(m.reference,m.incident,m.n,p,p.dist))
+				end
+			end
+		end
+	end
+
+	-- solve manifolds
+	-- multiple iterations
+	-- required to fix deep contacts
+	for j=1,3 do
+		for i=#contacts,1,-1 do
+			-- still a valid contact?
+			if(not contacts[i]()) deli(contacts,i)
 		end
 	end
 	
@@ -908,16 +941,22 @@ function _init()
 	--			1,{5,5,5},
 	--			{0,50,0},make_q(v_normz({rnd(),rnd(),rnd()},rnd())))))
 --
+	--add(_things,make_rigidbody(make_box(
+	--	1,{5,5,5},
+	--	{0,18,0},
+	--	make_q(v_up,0)
+	--)))
+
 	_a_box=make_rigidbody(make_box(
 		1,{5,5,5},
-		{6,3,0},
-		--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-		make_q(v_up,0.125)
+		{5,10,0},
+		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+		--make_q(v_up,rd())
 	))
 	_b_box=make_rigidbody(make_box(
-		1,{10,5,10},
+		0,{10,5,10},
 		{0,0,0},
-		make_q(v_up,0.125)
+		make_q(v_up,0)
 		--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
 		--q_x_q(
 		--	make_q({1,0,0},0.125),
@@ -945,17 +984,17 @@ function _update()
 	-- m_set_pos(m,_b_box.pos)
 	--_b_box.m=m
 -- 
-	local m=m_from_q(
-		q_x_q(
-			make_q(rot_axis,time()/32),
-			make_q(v_up,time()/16)))
-	local m=m_from_q(make_q({0,0,1},time()/16))
-	-- local m=_a_box.m
-	_a_box.pos={7,5*cos(time()/16),0}
-	m_set_pos(m,_a_box.pos)
-	_a_box.m=m
-
-    --world:update()
+	-- local m=m_from_q(
+	-- 	q_x_q(
+	-- 		make_q(rot_axis,time()/32),
+	-- 		make_q(v_up,time()/16)))
+	-- local m=m_from_q(make_q({0,0,1},time()/16))
+	-- -- local m=_a_box.m
+	-- _a_box.pos={7,5*cos(time()/16),0}
+	-- m_set_pos(m,_a_box.pos)
+	-- _a_box.m=m
+--
+    world:update()
 	
 	time_t+=1
 end
