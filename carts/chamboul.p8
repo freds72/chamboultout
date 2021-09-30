@@ -272,7 +272,7 @@ function overlap(a,b)
 	if(adist>0) return
 	local bdist,bface=query_face_directions(b,a)
 	if(bdist>0) return
-
+	
 	local edist,closest_edges=query_edge_direction(a,b)
 	if(edist>0) return
 
@@ -353,16 +353,16 @@ function overlap(a,b)
 		end
 	end
 	---- draw contacts
-	fillp()
-	for _,v in pairs(contacts) do
-		local x0,y0,w0=_cam:project2d(v)
-		circfill(x0,y0,1,7)
-
-		local n=v_add(v,out.n,4)
-		local x1,y1,w1=_cam:project2d(n)
-		line(x0,y0,x1,y1,5)
-	end
-	flip()
+	-- fillp()
+	-- for _,v in pairs(contacts) do
+	-- 	local x0,y0,w0=_cam:project2d(v)
+	-- 	circfill(x0,y0,1,7)
+-- 
+	-- 	local n=v_add(v,out.n,4)
+	-- 	local x1,y1,w1=_cam:project2d(n)
+	-- 	line(x0,y0,x1,y1,5)
+	-- end
+	-- flip()
 
 	out.contacts=contacts
 	return out
@@ -382,7 +382,7 @@ function is_contact(a,p,n,d)
 end
 function make_contact_solver(a,b,n,p,dist)
 	-- does nothing
-	-- if(not is_contact(a,p,n,d)) return
+	-- if(not is_contact(a,p,n,dist) and not is_contact(b,p,n,dist)) return
 	local nimpulse=0
 	local ra,rb=make_v(a.pos,p),make_v(b.pos,p)
 	local racn,rbcn=v_cross(ra,n),v_cross(rb,n)
@@ -585,7 +585,6 @@ function world:update()
 	for _,a in pairs(physic_actors) do
 		a:integrate(time_dt)
 	end
-	_contacts=contacts
 end
 
 -->8
@@ -790,6 +789,7 @@ function collect_faces(model,m,out)
 					-- todo: improve
 					verts.key=(v0.w+v1.w+v2.w+v3.w)/4
 					verts.visible=v_dot(face.n,cam_pos)>face.dist
+					verts.color=model.color
 					out[#out+1]=verts
 				end
 			end
@@ -803,11 +803,13 @@ function draw_faces(faces,hit)
 	for i,d in ipairs(faces) do
 		-- todo: color ramp	
 		fillp()
-		if(not d.visible) fillp(0xa5a5.8)
+		--if(not d.visible) fillp(0xa5a5.8)
 		if(hit and hit.reference_face==d.face) polyfill(d,11)		
 		if(hit and hit.incident_face==d.face) polyfill(d,8)		
-		-- polyfill(d,c)		
-		polyline(d,1)
+		if d.visible then
+			polyfill(d,d.color+d.light*3)		
+			--polyline(d,1)
+		end
 	end
 end
 
@@ -825,6 +827,7 @@ function draw_ground()
     draw_faces(out)
 end
 
+_color=1
 function make_box(mass,extents,pos,q)
 	local ex,ey,ez=unpack(extents)
 	ex/=2
@@ -850,6 +853,7 @@ function make_box(mass,extents,pos,q)
 			split"5,6,7,8,2"
 		}
 	local model={
+		color=_color,
 		v=verts,
 		-- faces
 		f=faces,
@@ -871,6 +875,7 @@ function make_box(mass,extents,pos,q)
 			{tail=8,head=5,direction={0,0,-1},normals={faces[5],faces[6]}}
 		}
 	}
+	_color+=4
 	for _,v in pairs(verts) do
 		v[1]*=ex
 		v[2]*=ey
@@ -942,15 +947,15 @@ function _init()
 --
 	--add(_things,make_rigidbody(make_box(
 	--	1,{5,5,5},
-	--	{0,18,0},
-	--	make_q(v_up,0)
+	--	{2,18,0},
+	--	make_q(v_up,rnd())
 	--)))
 
 	_a_box=make_rigidbody(make_box(
 		1,{5,5,5},
 		{0,8,0},
-		--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-		make_q(v_up,rnd())
+		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+		--make_q(v_up,rnd())
 	))
 	_b_box=make_rigidbody(make_box(
 		0,{10,5,10},
@@ -1017,10 +1022,6 @@ function _draw()
 
 	sort(out)
 
-	local ohit={}
-	if overlap(_a_box,_b_box,ohit) then
-		print("touch: "..(ohit.edges and "edges" or "faces"),2,2,8)
-	end
-    draw_faces(out,ohit)
+    draw_faces(out)
 end
 
