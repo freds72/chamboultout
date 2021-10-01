@@ -121,6 +121,8 @@ function query_face_directions(a,b)
 		-- find face in B most opposed to current face
 		local v=get_support(vb,f.n)
 		local d=v_dot(f.n,v)-f.dist
+		-- early exit
+		if(d>0) return d,f
 		if d>dmax then
 			dmax=d
 			fmax=f
@@ -204,6 +206,8 @@ function query_edge_direction(a,b)
 				end
 				local ebhead=transform(tx,bverts[eb.head])
 				local d=v_dot(axis,make_v(eahead,ebhead))
+				-- early exit
+				if(d>0) return d
 				if d>dmax then
 					dmax=d
 					closest_pair.dist=d
@@ -267,7 +271,12 @@ end
 
 -- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
 -- https://www.gdcvault.com/play/1017646/Physics-for-Game-Programmers-The
+-- https://www.randygaul.net/2019/06/19/collision-detection-in-2d-or-3d-some-steps-for-success/
 function overlap(a,b)
+	-- simplified version for ground/object
+	if(a.is_ground) return ground_overlap(a,b)
+	if(b.is_ground) return ground_overlap(b,a)
+	
 	local adist,aface=query_face_directions(a,b)
 	if(adist>0) return
 	local bdist,bface=query_face_directions(b,a)
@@ -312,10 +321,10 @@ function overlap(a,b)
 			out.incident=b
 			out.reference_face=aface	
 			out.n=rotate(a.m,aface.n)
+			--v_scale(out.n,-1)
 		end
-		-- find incident face
-		local n=rotate(out.reference.m,out.reference_face.n)
-		out.incident_face=out.incident:incident_face(n)
+		-- find incident face		
+		out.incident_face=out.incident:incident_face(out.n)
 		-- clip incident with reference sides
 		local tx=m_x_m(
 			m3_transpose(out.reference.m),{
@@ -352,17 +361,63 @@ function overlap(a,b)
 			end
 		end
 	end
-	---- draw contacts
-	-- fillp()
-	-- for _,v in pairs(contacts) do
-	-- 	local x0,y0,w0=_cam:project2d(v)
-	-- 	circfill(x0,y0,1,7)
--- 
-	-- 	local n=v_add(v,out.n,4)
-	-- 	local x1,y1,w1=_cam:project2d(n)
-	-- 	line(x0,y0,x1,y1,5)
-	-- end
-	-- flip()
+	-- draw contacts
+	 fillp()
+	 for _,v in pairs(contacts) do
+	 	local x0,y0,w0=_cam:project2d(v)
+	 	circfill(x0,y0,1,7)
+
+	 	local n=v_add(v,out.n,4)
+	 	local x1,y1,w1=_cam:project2d(n)
+	 	line(x0,y0,x1,y1,5)
+	 end
+	 flip()
+
+	out.contacts=contacts
+	return out
+end
+
+function ground_overlap(a,b)
+	local adist,aface=query_face_directions(a,b)
+	if(adist>0) return
+
+	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
+	local out,contacts={
+		reference=a,
+		incident=b,
+		reference_face=aface,
+		n=v_clone(aface.n),
+	},{}
+	
+	-- find incident face
+	local incident_face=out.incident:incident_face(aface.n)
+	-- convert incident face vertices into reference space (e.g. world space)
+	for i=1,4 do
+		add(contacts,transform(b.m,incident_face[i]))
+	end
+	-- keep only points under the reference plane
+	for i=#contacts,1,-1 do
+		local v=contacts[i]
+		local dist=v[2]
+		-- "deep" enough contact?
+		if dist<0 then				
+			v.dist=dist
+		else
+			-- invalid contact
+			deli(contacts,i)
+		end
+	end
+	-- draw contacts
+	 fillp()
+	 for _,v in pairs(contacts) do
+	 	local x0,y0,w0=_cam:project2d(v)
+	 	circfill(x0,y0,1,7)
+
+	 	local n=v_add(v,out.n,4)
+	 	local x1,y1,w1=_cam:project2d(n)
+	 	line(x0,y0,x1,y1,5)
+	 end
+	 flip()
 
 	out.contacts=contacts
 	return out
@@ -382,15 +437,16 @@ function is_contact(a,p,n,d)
 end
 function make_contact_solver(a,b,n,p,dist)
 	-- does nothing
-	-- if(not is_contact(a,p,n,dist) and not is_contact(b,p,n,dist)) return
+	-- printh("a: "..(a.mass_inv).." b: "..(b.mass_inv))
+	--if(not is_contact(a,p,n,dist) and not is_contact(b,p,n,dist)) return
 	local nimpulse=0
 	local ra,rb=make_v(a.pos,p),make_v(b.pos,p)
 	local racn,rbcn=v_cross(ra,n),v_cross(rb,n)
-
+	
 	local nm=a.mass_inv+b.mass_inv
 	nm+=v_dot(racn,rotate(a.i_inv,racn))+v_dot(rbcn,rotate(b.i_inv,rbcn))
 	nm=1/nm
-	
+
 	-- baumgarte
 	local bias=-k_bias*min(dist+k_slop)/time_dt
 
@@ -406,7 +462,6 @@ function make_contact_solver(a,b,n,p,dist)
 	if dv<-1 then
 		bias-=max(a.hardness,b.hardness)*dv
 	end
-
 	-- contact solver
 	return function()
 		local dv=
@@ -414,21 +469,21 @@ function make_contact_solver(a,b,n,p,dist)
 				v_add(b.v,v_cross(b.w,rb)),
 				v_add(a.v,v_cross(a.w,ra)),
 				-1)
-		
-		local vn=v_dot(dv,n)		
-		local lambda=nm*(-vn+bias)
 
+		local lambda=nm*max(-v_dot(dv,n)+bias)
+		
+		-- clamp impulse
 		local tempn=nimpulse
 		nimpulse=max(tempn+lambda)
-		lambda=nimpulse-tempn
-		
+		lambda=nimpulse-tempn			
+	
 		-- impulse too small?
 		if(lambda<k_small) return
 
 		-- correct linear velocity
 		local impulse=v_clone(n)
 		v_scale(impulse,lambda)
-		a.v=v_add(a.v,impulse,a.mass_inv,-1)
+		a.v=v_add(a.v,impulse,-a.mass_inv)
 		-- correct angular velocity
 		a.w=v_add(
 			a.w,
@@ -459,11 +514,14 @@ function make_rigidbody(a)
 	-- compute (inverse) inertia tensor
 	local ibody_inv
 	if a.mass>0 then
-		local size=v_clone(a.extents)
-		v_scale(size,2)
-		size=v_sqr(size)
+		local ex,ey,ez=unpack(a.extents)
+		local size={ex*ex,ey*ey,ez*ez}
+		-- 4=square(2*extents)
+		v_scale(size,4)
 		local ibody=make_m3(size[2]+size[3],size[1]+size[3],size[1]+size[2])
-		m_scale(ibody,a.mass/12)
+		-- 8=2*2*2 extents
+		local mass=8*a.mass*(ex*ey*ez)*(a.density or 1)
+		m_scale(ibody,mass/12)
 		
 		-- invert 
 		ibody_inv=m3_inv(ibody)
@@ -473,13 +531,13 @@ function make_rigidbody(a)
 	end
 
 	-- 
-	local g={0,-24*a.mass,0}
+	local g={0,-9.81*a.mass,0}
 	local rb={
-		i_inv=make_m3(),
+		i_inv=make_m3(is_static and 0,is_static and 0,is_static and 0),
 		v=v_zero(),
 		m=a.m,
 		w=v_zero(),
-		mass_inv=is_static and 1 or 1/a.mass,
+		mass_inv=is_static and 0 or 1/a.mass,
 		-- obj to world space
 		pt_toworld=function(self,p)
 			return transform(self.m,p)
@@ -562,7 +620,7 @@ function world:update()
 		local a=physic_actors[i]
 		for j=i+1,#physic_actors do
 			local b=physic_actors[j]
-			local m=overlap(a,b)			
+			local m=overlap(a,b)
 			if m then
 				for _,p in pairs(m.contacts) do										
 					add(contacts,make_contact_solver(m.reference,m.incident,m.n,p,p.dist))
@@ -803,13 +861,14 @@ function draw_faces(faces,hit)
 	for i,d in ipairs(faces) do
 		-- todo: color ramp	
 		fillp()
-		--if(not d.visible) fillp(0xa5a5.8)
+		if(not d.visible) fillp(0xa5a5.8)
 		if(hit and hit.reference_face==d.face) polyfill(d,11)		
 		if(hit and hit.incident_face==d.face) polyfill(d,8)		
-		if d.visible then
-			polyfill(d,d.color+d.light*3)		
-			--polyline(d,1)
-		end
+		--if d.visible then
+		--	polyfill(d,d.color+d.light*3)		
+		--	polyline(d,1)
+		--end
+		polyline(d,1)
 	end
 end
 
@@ -921,6 +980,33 @@ function make_box(mass,extents,pos,q)
 	}
 end
 
+function make_ground()
+	local model={
+		color=_color,
+		-- faces
+		f={
+			{
+				axis=2,
+				sign=1,
+				sides={},
+				n={0,1,0},
+				dist=0
+			}
+		},
+		e={}
+	}
+	
+	return {
+		is_ground=true,
+		mass=0,
+		hardness=0.2,
+		model=model,
+		pos=v_zero(),
+		q=make_q(v_up,0),
+		m=make_m3()
+	}
+end
+
 function make_picker()
 	local lmb=0
 	return {
@@ -951,22 +1037,25 @@ function _init()
 	--	make_q(v_up,rnd())
 	--)))
 
-	_a_box=make_rigidbody(make_box(
-		1,{5,5,5},
-		{0,8,0},
-		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-		--make_q(v_up,rnd())
-	))
+	make_rigidbody(make_ground())
+
+	--_a_box=make_rigidbody(make_box(
+	--	2,{1,1,1},
+	--	{0.5,8,0},
+	--	--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+	--	make_q(v_up,rnd())
+	--))
+	--add(_things,_a_box)
+
 	_b_box=make_rigidbody(make_box(
-		0,{10,5,10},
-		{0,0,0},
-		make_q(v_up,0)
-		--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+		1,{1,1,1},
+		{2,2,0},
+		--make_q(v_up,0)
+		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
 		--q_x_q(
 		--	make_q({1,0,0},0.125),
 		--	make_q({0,1,0},0.125))
 	))
-	add(_things,_a_box)
 	add(_things,_b_box)
 
 	-- floor
