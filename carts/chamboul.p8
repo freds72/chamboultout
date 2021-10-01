@@ -85,10 +85,11 @@ end
 
 
 function get_support(vertices,n)
-	local dmax,vmax=-32000
-	for _,v in pairs(vertices) do
 		-- !! invert normal !!
-		local d=-v_dot(v,n)
+	local axis,sign,dmax,vmax=n.axis,-n.sign,-32000
+	for _,v in pairs(vertices) do
+		-- faster v_dot(n,v)
+		local d=sign*v[axis]
 		if d>dmax then
 			dmax=d
 			vmax=v
@@ -116,12 +117,12 @@ function query_face_directions(a,b)
 
 	local dmax,fmax=-32000
 	for _,f in pairs(a.model.f) do
-		-- find face in B most opposed to current face
-		local v=get_support(vb,f.n)
+		-- find vertex in B most "included" in current face
+		local v=get_support(vb,f)
 		-- faster v_dot(f.n,v)
 		local d=f.sign*v[f.axis]-f.dist
 		-- early exit
-		if(d>0) return d,f
+		if(d>0) return d
 		if d>dmax then
 			dmax=d
 			fmax=f
@@ -389,35 +390,27 @@ function overlap(a,b)
 end
 
 function ground_overlap(a,b)
-	local adist,aface=query_face_directions(a,b)
-	if(adist>0) return
-
 	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
 	local out,contacts={
 		reference=a,
 		incident=b,
-		reference_face=aface,
-		n=v_clone(aface.n),
+		n=v_clone(v_up),
 	},{}
 	
 	-- find incident face
-	local incident_face=out.incident:incident_face(aface.n)
-	-- convert incident face vertices into reference space (e.g. world space)
-	for i=1,4 do
-		add(contacts,transform(b.m,incident_face[i]))
-	end
+	local incident_face=out.incident:incident_face(v_up)
 	-- keep only points under the reference plane
-	for i=#contacts,1,-1 do
-		local v=contacts[i]
+	for i=1,4 do
+		local v=transform(b.m,incident_face[i])
 		local dist=v[2]
 		-- "deep" enough contact?
 		if dist<0 then				
 			v.dist=dist
-		else
-			-- invalid contact
-			deli(contacts,i)
+			add(contacts,v)
 		end
 	end
+	-- no point below ground
+	if(#contacts==0) return
 	-- draw contacts
 	-- fillp()
 	-- for _,v in pairs(contacts) do
@@ -439,17 +432,17 @@ end
 -- normal
 -- body contact point (world position)
 -- penetration
-function is_contact(a,p,n,d)
+function is_contact(a,p,n,d,sign)
+	sign=sign or 1
 	local padot=a:pt_velocity(p)
-	local vrel=v_dot(n,padot)
+	local vrel=sign*v_dot(n,padot)
 	-- resting condition or separating
-	if(d<k_small and vrel>-k_small_v) printh("dropped") return
+	if(d<k_small and vrel>-k_small_v) return
 	return true
 end
 function make_contact_solver(a,b,n,p,dist)
-	-- does nothing
-	-- printh("a: "..(a.mass_inv).." b: "..(b.mass_inv))
-	--if(not is_contact(a,p,n,dist) and not is_contact(b,p,n,dist)) return
+	-- valid contact (e.g)
+	if(not is_contact(a,p,n,dist,-1) and not is_contact(b,p,n,dist)) return
 	local nimpulse=0
 	local ra,rb=make_v(a.pos,p),make_v(b.pos,p)
 	local racn,rbcn=v_cross(ra,n),v_cross(rb,n)
@@ -483,7 +476,7 @@ function make_contact_solver(a,b,n,p,dist)
 
 		local lambda=nm*max(-v_dot(dv,n)+bias)
 		
-		-- clamp impulse
+		-- clamp impulse (+overshoot control)
 		local tempn=nimpulse
 		nimpulse=max(tempn+lambda)
 		lambda=nimpulse-tempn			
@@ -560,30 +553,25 @@ function make_rigidbody(a)
 		incident_face=function(self,rn)
 			-- world to local (normal)
 			rn=rotate_inv(self.m,rn)
-			local dmin,fmin,nmin=32000
+			local dmin,fmin=32000
 			for _,f in pairs(bbox.f) do
-				local n=f.n
-				local d=v_dot(rn,n)
+				local d=f.sign*rn[f.axis]
 				if d<dmin then
-					dmin,fmin,nmin=d,f,n
+					dmin,fmin=d,f
 				end
 			end
-			return fmin,nmin
+			return fmin
 		end,
-			-- register a force
+		-- register a force
 		add_force=function(self,f,p)
 			if(is_static) return
+			self.sleeping=nil
 			force=v_add(force,f,a.mass)
 			torque=v_add(torque,v_cross(make_v(self.pos,p),f))
 		end,
-		add_impulse=function(self,f,p)		 
-			if(is_static) return
-			self.v=v_add(self.v,f,self.mass_inv)
-			self.w=v_add(self.w,rotate(self.i_inv,v_cross(make_v(self.pos,p),f)))
-		end,
 		-- apply forces & torque for iteration
 		prepare=function(self,dt)
-			if(is_static) return
+			if(is_static or self.sleeping) return
 
 			-- add gravity
 			force=v_add(force,g)
@@ -602,16 +590,19 @@ function make_rigidbody(a)
 			v_scale(self.w,1/(1+dt*0.6))
 		end,
 		integrate=function(self,dt)
-			if(is_static) return
+			if(is_static or self.sleeping) return
+
+			-- clear forces
+			force,torque=v_zero(),v_zero()
+
+			-- no significant velocity/angular v?
+			if(v_dot(self.v,self.v)<k_small and v_dot(self.w,self.w)<k_small_v) self.sleeping=true self.v=v_zero() self.w=v_zero() return
 
 			self.pos=v_add(self.pos,self.v,dt)
 			q_dydt(self.q,self.w,dt)
 			self.m=m_from_q(self.q)
 			--
 			m_set_pos(self.m,self.pos)
-
-			-- clear forces
-			force,torque=v_zero(),v_zero()
 		end
 	}
 	-- register rigid bodies
@@ -633,6 +624,8 @@ function world:update()
 			local b=physic_actors[j]
 			local m=overlap(a,b)
 			if m then
+				a.sleeping=nil
+				b.sleeping=nil
 				for _,p in pairs(m.contacts) do										
 					add(contacts,make_contact_solver(m.reference,m.incident,m.n,p,p.dist))
 				end
@@ -823,7 +816,7 @@ local v_cache_cls={
 	end
 }
 
-function collect_faces(model,m,out)
+function collect_faces(thing,model,m,out)
 	-- cam pos in object space
 	local cam_pos=transform_inv(m,_cam.pos)
 	-- sun vector in model space
@@ -858,6 +851,7 @@ function collect_faces(model,m,out)
 					-- todo: improve
 					verts.key=(v0.w+v1.w+v2.w+v3.w)/4
 					verts.visible=v_dot(face.n,cam_pos)>face.dist
+					verts.thing=thing
 					verts.model=model
 					out[#out+1]=verts
 				end
@@ -877,7 +871,7 @@ function draw_faces(faces,hit)
 		if(hit and hit.incident_face==d.face) polyfill(d,8)		
 		if d.visible then
 			polyfill(d,d.model.shadeless and d.model.color or (d.model.color+d.light*3))
-			polyline(d,5)
+			polyline(d,d.thing.sleeping and 11 or 5)
 		end
 		--polyline(d,1)
 	end
@@ -892,7 +886,7 @@ function draw_ground()
 		0,0,0,1
 	}
 	m_set_pos(m,{_cam.pos[1],-0.5,_cam.pos[3]})
-	collect_faces(_ground.model,m,out)
+	collect_faces(_ground,_ground.model,m,out)
 
     draw_faces(out)
 end
@@ -1083,6 +1077,7 @@ function _init()
 		--	make_q({1,0,0},0.125),
 		--	make_q({0,1,0},0.125))
 	))
+	
 	add(_things,_b_box)
 
 	-- floor
@@ -1135,7 +1130,7 @@ function _draw()
 
     local out={}
 	for _,thing in pairs(_things) do
-		collect_faces(thing.model,thing.m,out)
+		collect_faces(thing,thing.model,thing.m,out)
 	end
 
 	sort(out)

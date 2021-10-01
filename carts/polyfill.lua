@@ -20,7 +20,7 @@ function polyfill(p,col)
 			if x then
 				local x,x0=x,x0
 				if(x0>x) x,x0=x0,x
-				rectfill(x0+1,y,x,y)
+				rectfill(x0+1,y,x,y,col)
 			else
 			 nodes[y]=x0
 			end
