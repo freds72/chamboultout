@@ -294,19 +294,19 @@ function overlap(a,b)
 		out.reference=a
 		out.incident=b
 		out.n=rotate(a.m,closest_edges.n)
-		--if(v_dot(make_v(a.pos,b.pos),out.n)<0) v_scale(out.n,-1)
 		local c=transform(a.m,v_add(closest_edges.c1,closest_edges.c2))
 		v_scale(c,0.5)
 		c.dist=closest_edges.dist		
 		add(contacts,c)			
 		-- transform edge in world space
 		-- debug
-		draw_edge(
-			transform(a.m,a.model.v[ea.head]),
-			transform(a.m,a.model.v[ea.tail]),11)
-		draw_edge(
-			transform(b.m,b.model.v[eb.head]),
-			transform(b.m,b.model.v[eb.tail]),8)
+		--draw_edge(
+		--	transform(a.m,a.model.v[ea.head]),
+		--	transform(a.m,a.model.v[ea.tail]),11)
+		--draw_edge(
+		--	transform(b.m,b.model.v[eb.head]),
+		--	transform(b.m,b.model.v[eb.tail]),8)
+		--	flip()
 	else
 		if 0.95*bdist > adist+0.01 then
 			--printh(tostr(time()).."\t face B contact")
@@ -362,16 +362,16 @@ function overlap(a,b)
 		end
 	end
 	-- draw contacts
-	 fillp()
-	 for _,v in pairs(contacts) do
-	 	local x0,y0,w0=_cam:project2d(v)
-	 	circfill(x0,y0,1,7)
-
-	 	local n=v_add(v,out.n,4)
-	 	local x1,y1,w1=_cam:project2d(n)
-	 	line(x0,y0,x1,y1,5)
-	 end
-	 flip()
+	-- fillp()
+	-- for _,v in pairs(contacts) do
+	-- 	local x0,y0,w0=_cam:project2d(v)
+	-- 	circfill(x0,y0,1,7)
+--
+	-- 	local n=v_add(v,out.n,4)
+	-- 	local x1,y1,w1=_cam:project2d(n)
+	-- 	line(x0,y0,x1,y1,5)
+	-- end
+	-- flip()
 
 	out.contacts=contacts
 	return out
@@ -408,16 +408,16 @@ function ground_overlap(a,b)
 		end
 	end
 	-- draw contacts
-	 fillp()
-	 for _,v in pairs(contacts) do
-	 	local x0,y0,w0=_cam:project2d(v)
-	 	circfill(x0,y0,1,7)
-
-	 	local n=v_add(v,out.n,4)
-	 	local x1,y1,w1=_cam:project2d(n)
-	 	line(x0,y0,x1,y1,5)
-	 end
-	 flip()
+	-- fillp()
+	-- for _,v in pairs(contacts) do
+	-- 	local x0,y0,w0=_cam:project2d(v)
+	-- 	circfill(x0,y0,1,7)
+--
+	-- 	local n=v_add(v,out.n,4)
+	-- 	local x1,y1,w1=_cam:project2d(n)
+	-- 	line(x0,y0,x1,y1,5)
+	-- end
+	-- flip()
 
 	out.contacts=contacts
 	return out
@@ -520,7 +520,7 @@ function make_rigidbody(a)
 		v_scale(size,4)
 		local ibody=make_m3(size[2]+size[3],size[1]+size[3],size[1]+size[2])
 		-- 8=2*2*2 extents
-		local mass=8*a.mass*(ex*ey*ez)*(a.density or 1)
+		local mass=8*a.mass*(ex*ey*ez)*(a.density or 0.1)
 		m_scale(ibody,mass/12)
 		
 		-- invert 
@@ -861,14 +861,14 @@ function draw_faces(faces,hit)
 	for i,d in ipairs(faces) do
 		-- todo: color ramp	
 		fillp()
-		if(not d.visible) fillp(0xa5a5.8)
+		--if(not d.visible) fillp(0xa5a5.8)
 		if(hit and hit.reference_face==d.face) polyfill(d,11)		
 		if(hit and hit.incident_face==d.face) polyfill(d,8)		
-		--if d.visible then
-		--	polyfill(d,d.color+d.light*3)		
-		--	polyline(d,1)
-		--end
-		polyline(d,1)
+		if d.visible then
+			polyfill(d,d.color+d.light*3)		
+			--polyline(d,1)
+		end
+		--polyline(d,1)
 	end
 end
 
@@ -971,7 +971,7 @@ function make_box(mass,extents,pos,q)
 
 	return {
 		mass=mass,
-		hardness=0.1,
+		hardness=0.4,
 		extents={ex,ey,ez},
 		model=model,
 		pos=v_clone(pos),
@@ -1022,7 +1022,7 @@ function _init()
 	-- enable lock+button alias
 	poke(0x5f2d,7)
 
-	_cam=make_cam({0,8,-40})
+	_cam=make_cam({0,8,-20})
 
 	-- cube
 	--add(_things,
@@ -1039,17 +1039,26 @@ function _init()
 
 	make_rigidbody(make_ground())
 
-	--_a_box=make_rigidbody(make_box(
-	--	2,{1,1,1},
-	--	{0.5,8,0},
-	--	--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-	--	make_q(v_up,rnd())
-	--))
-	--add(_things,_a_box)
+	add(_things,
+		make_rigidbody(make_box(
+			1,{2,2,2},
+			{0,18,0},
+			make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+			--make_q(v_up,rnd())
+		))
+	)
+
+	_a_box=make_rigidbody(make_box(
+		1,{5,2,5},
+		{0,15,0},
+		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+		--make_q(v_up,rnd())
+	))
+	add(_things,_a_box)
 
 	_b_box=make_rigidbody(make_box(
-		1,{1,1,1},
-		{2,2,0},
+		1,{5,5,5},
+		{2,8,0},
 		--make_q(v_up,0)
 		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
 		--q_x_q(
