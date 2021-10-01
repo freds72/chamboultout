@@ -847,7 +847,7 @@ function collect_faces(model,m,out)
 					-- todo: improve
 					verts.key=(v0.w+v1.w+v2.w+v3.w)/4
 					verts.visible=v_dot(face.n,cam_pos)>face.dist
-					verts.color=model.color
+					verts.model=model
 					out[#out+1]=verts
 				end
 			end
@@ -865,8 +865,8 @@ function draw_faces(faces,hit)
 		if(hit and hit.reference_face==d.face) polyfill(d,11)		
 		if(hit and hit.incident_face==d.face) polyfill(d,8)		
 		if d.visible then
-			polyfill(d,d.color+d.light*3)		
-			--polyline(d,1)
+			polyfill(d,d.model.shadeless and d.model.color or (d.model.color+d.light*3))
+			polyline(d,5)
 		end
 		--polyline(d,1)
 	end
@@ -886,7 +886,7 @@ function draw_ground()
     draw_faces(out)
 end
 
-_color=1
+_color=5
 function make_box(mass,extents,pos,q)
 	local ex,ey,ez=unpack(extents)
 	ex/=2
@@ -934,7 +934,7 @@ function make_box(mass,extents,pos,q)
 			{tail=8,head=5,direction={0,0,-1},normals={faces[5],faces[6]}}
 		}
 	}
-	_color+=4
+	--_color+=4
 	for _,v in pairs(verts) do
 		v[1]*=ex
 		v[2]*=ey
@@ -982,7 +982,6 @@ end
 
 function make_ground()
 	local model={
-		color=_color,
 		-- faces
 		f={
 			{
@@ -1069,6 +1068,8 @@ function _init()
 
 	-- floor
 	_ground=make_box(0,{500,1,500},{0,-0.5,0},make_q(v_up,0))
+	_ground.model.shadeless=true
+	_ground.model.color=6
 end
 
 function _update()

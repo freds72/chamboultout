@@ -18,7 +18,9 @@ function polyfill(p,col)
 		for y=cy0,min(cy1,127) do
 			local x=nodes[y]
 			if x then
-				rectfill(x0,y,x,y)
+				local x,x0=x,x0
+				if(x0>x) x,x0=x0,x
+				rectfill(x0+1,y,x,y)
 			else
 			 nodes[y]=x0
 			end
