@@ -108,8 +108,6 @@ function query_face_directions(a,b)
 		-a.pos[1],-a.pos[2],-a.pos[3],1})
 	tx=m_x_m(tx,b.m)
 
-	--local tx=m3_x_m3(m3_transpose(ma),b.m)
-	--m_set_pos(tx,make_v(a.pos,b.pos))
 	-- cache B vertices
 	local vb={}
 	for i,v in pairs(b.model.v) do
@@ -120,7 +118,8 @@ function query_face_directions(a,b)
 	for _,f in pairs(a.model.f) do
 		-- find face in B most opposed to current face
 		local v=get_support(vb,f.n)
-		local d=v_dot(f.n,v)-f.dist
+		-- faster v_dot(f.n,v)
+		local d=f.sign*v[f.axis]-f.dist
 		-- early exit
 		if(d>0) return d,f
 		if d>dmax then
@@ -131,17 +130,20 @@ function query_face_directions(a,b)
 	return dmax,fmax
 end
 
+
 function is_minkowski_face(a,b,c,d)
-	local bxa,dxc=v_cross(b,a),v_cross(d,c)
-	local cba,dba,adc,bdc=v_dot(c,bxa),v_dot(d,bxa),v_dot(a,dxc),v_dot(b,dxc)
+	local bxa,dxc=v_cross(b.n,a.n),v_cross(d,c)
+	local cba,dba,adc,bdc=v_dot(c,bxa),v_dot(d,bxa),a.sign*dxc[a.axis],b.sign*dxc[b.axis]
 	return cba*dba<0 and adc*bdc<0 and cba*bdc>0
 end
 
 function build_minkowski_face(ea,eb,tx)
-	local bn1,bn2=rotate(tx,eb.normals[1].n),rotate(tx,eb.normals[2].n)
-	v_scale(bn1,-1)
-	v_scale(bn2,-1)
-	return is_minkowski_face(ea.normals[1].n,ea.normals[2].n,bn1,bn2)
+	local n1,n2=eb.normals[1],eb.normals[2]
+	--v_scale(bn1,-1)
+	--v_scale(bn2,-1)
+	return is_minkowski_face(
+		ea.normals[1],ea.normals[2],
+		rotate_axis(tx,n1.axis,-n1.sign),rotate_axis(tx,n2.axis,-n2.sign))
 end
 
 function find_edge_closest_points(p1,q1,p2,q2)	
@@ -169,6 +171,11 @@ function find_edge_closest_points(p1,q1,p2,q2)
 	return c1,c2
 end
 
+function rotate_axis(tx,axis,sign)
+	axis=(axis-1)<<2
+	return {sign*tx[axis+1],sign*tx[axis+2],sign*tx[axis+3]} 
+end
+
 function query_edge_direction(a,b)
 	-- local ma,mb=a.m,b.m
 	-- B rotation in A space
@@ -192,10 +199,13 @@ function query_edge_direction(a,b)
 	local dmax,closest_pair=-32000,{}
 	for _,ea in pairs(a.model.e) do
 		local eahead=averts[ea.head]
+		local eadir=ea.direction
 		for _,eb in pairs(b.model.e) do	
-			local ebdir=rotate(tx,eb.direction)
+			local ebdir=eb.direction
+			-- optimized rotate(tx,eb.direction)
+			ebdir=rotate_axis(tx,ebdir.axis,ebdir.sign)
 			-- parallel edges?
-			if(abs(v_dot(ea.direction,ebdir))>0.99) goto parallel
+			if(abs(ebdir[eadir.axis])>0.99) goto parallel
 
 			-- intersection = minkowski face
 			if build_minkowski_face(ea,eb,tx) then
@@ -295,6 +305,7 @@ function overlap(a,b)
 		out.incident=b
 		out.n=rotate(a.m,closest_edges.n)
 		local c=transform(a.m,v_add(closest_edges.c1,closest_edges.c2))
+		-- middle point
 		v_scale(c,0.5)
 		c.dist=closest_edges.dist		
 		add(contacts,c)			
@@ -324,7 +335,7 @@ function overlap(a,b)
 			--v_scale(out.n,-1)
 		end
 		-- find incident face		
-		out.incident_face=out.incident:incident_face(out.n)
+		local incident_face=out.incident:incident_face(out.n)
 		-- clip incident with reference sides
 		local tx=m_x_m(
 			m3_transpose(out.reference.m),{
@@ -335,7 +346,7 @@ function overlap(a,b)
 		tx=m_x_m(tx,out.incident.m)
 		-- convert incident face into reference space
 		for i=1,4 do
-			add(contacts,transform(tx,out.incident_face[i]))
+			add(contacts,transform(tx,incident_face[i]))
 		end
 		for _,side in pairs(out.reference_face.sides) do
 			if(#contacts==0) break			
@@ -432,7 +443,7 @@ function is_contact(a,p,n,d)
 	local padot=a:pt_velocity(p)
 	local vrel=v_dot(n,padot)
 	-- resting condition or separating
-	if(d<k_small and vrel>-k_small_v) return
+	if(d<k_small and vrel>-k_small_v) printh("dropped") return
 	return true
 end
 function make_contact_solver(a,b,n,p,dist)
@@ -533,7 +544,7 @@ function make_rigidbody(a)
 	-- 
 	local g={0,-9.81*a.mass,0}
 	local rb={
-		i_inv=make_m3(is_static and 0,is_static and 0,is_static and 0),
+		i_inv=is_static and make_m3(0,0,0) or make_m3(),
 		v=v_zero(),
 		m=a.m,
 		w=v_zero(),
@@ -918,20 +929,20 @@ function make_box(mass,extents,pos,q)
 		f=faces,
 		e={
 			-- bottom loop
-			{tail=1,head=2,direction={1,0,0} ,normals={faces[1],faces[2]}},
-			{tail=2,head=3,direction={0,0,1} ,normals={faces[1],faces[3]}},
-			{tail=3,head=4,direction={-1,0,0},normals={faces[1],faces[4]}},
-			{tail=4,head=1,direction={0,0,-1},normals={faces[1],faces[5]}},
-			-- support edges
-			{tail=1,head=5,direction=v_up,normals={faces[2],faces[5]}},
-			{tail=2,head=6,direction=v_up,normals={faces[3],faces[2]}},
-			{tail=3,head=7,direction=v_up,normals={faces[4],faces[3]}},
-			{tail=4,head=8,direction=v_up,normals={faces[5],faces[4]}},
+			{tail=1,head=2,direction=1 ,normals={faces[1],faces[2]}},
+			{tail=2,head=3,direction=3 ,normals={faces[1],faces[3]}},
+			{tail=3,head=4,direction=-1,normals={faces[1],faces[4]}},
+			{tail=4,head=1,direction=-3,normals={faces[1],faces[5]}},
+			-- support edgessplit
+			{tail=1,head=5,direction=2,normals={faces[2],faces[5]}},
+			{tail=2,head=6,direction=2,normals={faces[3],faces[2]}},
+			{tail=3,head=7,direction=2,normals={faces[4],faces[3]}},
+			{tail=4,head=8,direction=2,normals={faces[5],faces[4]}},
 			-- top loop
-			{tail=5,head=6,direction={1,0,0} ,normals={faces[2],faces[6]}},
-			{tail=6,head=7,direction={0,0,1} ,normals={faces[3],faces[6]}},
-			{tail=7,head=8,direction={-1,0,0},normals={faces[4],faces[6]}},
-			{tail=8,head=5,direction={0,0,-1},normals={faces[5],faces[6]}}
+			{tail=5,head=6,direction=1,normals={faces[2],faces[6]}},
+			{tail=6,head=7,direction=3,normals={faces[3],faces[6]}},
+			{tail=7,head=8,direction=-1,normals={faces[4],faces[6]}},
+			{tail=8,head=5,direction=-3,normals={faces[5],faces[6]}}
 		}
 	}
 	--_color+=4
@@ -940,7 +951,15 @@ function make_box(mass,extents,pos,q)
 		v[2]*=ey
 		v[3]*=ez
 	end
-	
+	for i,e in pairs(model.e) do
+		local axis=e.direction
+		local direction=v_zero()
+		direction.axis=abs(axis)
+		direction.sign=sgn(axis)
+		direction[direction.axis]=direction.sign
+		model.e[i].direction=direction
+	end
+
 	for _,f in pairs(faces) do
 		-- de-reference vertex indices
 		for i=1,4 do
