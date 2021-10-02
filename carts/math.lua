@@ -81,7 +81,6 @@ function v_normz(v)
 end
 
 -- matrix functions
-
 -- new matrix from euler angles
 function make_m_from_euler(x,y,z)
 		local a,b = cos(x),-sin(x)

@@ -12,9 +12,10 @@ __lua__
 local time_t,time_dt=0,1/30
 local _things={}
 local physic_actors={}
-local v_grav={0,-1,0}
 local _sun_dir={0,-0.707,0.707}
 local world={}
+local _dithers={}
+local _particles={}
 
 -- camera
 local _cam
@@ -22,11 +23,8 @@ local k_far,k_near=0,2
 local k_right,k_left=4,8
 local z_near=1
 
--- physic thresholds
-local k_small,k_small_v=0.01,0.1
--- baumgarte
-local k_bias=0.2
-local k_slop=0.05
+-- physic thresholds+baumgarte
+local k_small,k_small_v,k_bias,k_slop=0.01,0.1,0.2,0.05
 
 -->8
 -- physic engine
@@ -42,7 +40,7 @@ function hitscan(boxes,a,b)
 		local p0,p1,hit=aa,bb
 		for _,face in pairs(box.model.f) do
 			local plane_dist=face.dist
-			local dist,otherdist=v_dot(face.n,p0),v_dot(face.n,p1)
+			local dist,otherdist=face.sign*p0[face.axis],face.sign*p1[face.axis]
 			local side,otherside=dist>plane_dist,otherdist>plane_dist
 			-- outside of convex space
 			if(side and otherside) hit=nil break
@@ -85,14 +83,13 @@ end
 
 
 function get_support(vertices,n)
-		-- !! invert normal !!
+	-- !! invert normal !!
 	local axis,sign,dmax,vmax=n.axis,-n.sign,-32000
 	for _,v in pairs(vertices) do
 		-- faster v_dot(n,v)
 		local d=sign*v[axis]
 		if d>dmax then
-			dmax=d
-			vmax=v
+			dmax,vmax=d,v
 		end
 	end
 	return vmax
@@ -124,13 +121,11 @@ function query_face_directions(a,b)
 		-- early exit
 		if(d>0) return d
 		if d>dmax then
-			dmax=d
-			fmax=f
+			dmax,fmax=d,f
 		end
 	end
 	return dmax,fmax
 end
-
 
 function is_minkowski_face(a,b,c,d)
 	local bxa,dxc=v_cross(b.n,a.n),v_cross(d,c)
@@ -148,22 +143,18 @@ function build_minkowski_face(ea,eb,tx)
 end
 
 function find_edge_closest_points(p1,q1,p2,q2)	
-	local s,t=0,0
 	local p1,q1,p2,q2=v_clone(p1),v_clone(q1),v_clone(p2),v_clone(q2)
 	-- avoid overflow
-	v_scale(p1,1/16)
-	v_scale(q1,1/16)
-	v_scale(p2,1/16)
-	v_scale(q2,1/16)
+	v_scale(p1,0.0625)
+	v_scale(q1,0.0625)
+	v_scale(p2,0.0625)
+	v_scale(q2,0.0625)
 	local d1,d2=make_v(p1,q1),make_v(p2,q2)
 	local r=make_v(p1,p2)
-	local a=v_dot(d1,d1)
-	local e=v_dot(d2,d2)
-	local f=v_dot(d2,r)
-	local c=v_dot(d1,r)
+	local a,e=v_dot(d1,d1),v_dot(d2,d2)
+	local f,c=v_dot(d2,r),v_dot(d1,r)
 	local b=v_dot(d1,d2)
-	local denom=a*e-b*b
-	local s=(b*f-c*e)/denom
+	local s=(b*f-c*e)/(a*e-b*b)
 	local t=(b*s+f)/e
 
 	local c1,c2=v_add(p1,d1,-s),v_add(p2,d2,-t)
@@ -178,11 +169,7 @@ function rotate_axis(tx,axis,sign)
 end
 
 function query_edge_direction(a,b)
-	-- local ma,mb=a.m,b.m
-	-- B rotation in A space
-	--local tx=m3_x_m3(m3_transpose(ma),b.m)
-	--m_set_pos(tx,make_v(a.pos,b.pos))
-	--
+	-- B in A space
 	local tx=m_x_m(
 		m3_transpose(a.m),{
 		1,0,0,0,
@@ -190,11 +177,6 @@ function query_edge_direction(a,b)
 		0,0,1,0,
 		-a.pos[1],-a.pos[2],-a.pos[3],1})
 	tx=m_x_m(tx,b.m)
-	-- cache B vertices
-	-- local vb={}
-	-- for i,v in pairs(b.model.v) do
-	-- 	vb[i]=transform(tx,v)
-	-- end
 
 	local averts,bverts=a.model.v,b.model.v
 	local dmax,closest_pair=-32000,{}
@@ -232,48 +214,8 @@ function query_edge_direction(a,b)
 					closest_pair.c1=c1
 					closest_pair.c2=c2
 					closest_pair.n=axis
-					--
-					-- draw_edge(
-					-- 	transform(a.m,averts[ea.head]),
-					-- 	transform(a.m,averts[ea.tail]),7)
-					-- local b0,b1=bverts[eb.head],bverts[eb.tail]
-					-- -- local ab=make_v(a.pos,b.pos)
-					-- -- b world space rotation
-					-- -- rebase pos to a
-					-- --b0,b1=
-					-- --	v_add(rotate(b.m,b0),ab),
-					-- --	v_add(rotate(b.m,b1),ab)
-					-- ---- position in A space
-					-- --b0,b1=
-					-- --	rotate_inv(a.m,b0),
-					-- --	rotate_inv(a.m,b1),
-					-- --draw_edge(
-					-- --	transform(a.m,transform(a.m,b0)),
-					-- --	transform(a.m,transform(a.m,b1)),11)
-					-- draw_edge(
-					-- 	transform(a.m,transform(tx,b0)),
-					-- 	transform(a.m,transform(tx,b1)),11)
-					-- flip()
 				end
-			end			
-			
-			--[[
-			local axis=v_normz(v_cross(ea.direction,ebdir))
-			local eahead=averts[ea.head]
-			-- a origin is 0
-			if v_dot(axis,eahead)<0 then
-				v_scale(axis,-1)
-			end
-			-- plane a
-			local adist=v_dot(ea.direction,eahead)
-			local v=get_support(vb,axis) -- -1 in function
-			local d=v_dot(axis,v)-adist
-			if d>dmax then
-				dmax=d
-				eamax=ea
-				ebmax=eb
-			end
-			]]
+			end	
 ::parallel::			
 		end
 	end
@@ -283,6 +225,21 @@ end
 -- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
 -- https://www.gdcvault.com/play/1017646/Physics-for-Game-Programmers-The
 -- https://www.randygaul.net/2019/06/19/collision-detection-in-2d-or-3d-some-steps-for-success/
+--function get_column(m,i)
+--	return {m[i],m[i+4],m[i+8]}
+--end
+--function track_face_axis(axis,n,s,smax,normal,axisnormal)
+--	if(s>0) return true
+--
+--	if s>smax then
+--		smax=s
+--		axis=n
+--		axisnormal=normal
+--	end
+--
+--	return false,smax,axis,axisnormal
+--end
+
 function overlap(a,b)
 	-- simplified version for ground/object
 	if(a.is_ground) return ground_overlap(a,b)
@@ -292,7 +249,27 @@ function overlap(a,b)
 	if(adist>0) return
 	local bdist,bface=query_face_directions(b,a)
 	if(bdist>0) return
-	
+
+	--local c=m3_x_m3(m3_transpose(a.m),b.m)
+	--local absc={}
+	--for i,v in pairs(c) do
+	--	absc[i]=abs(v)
+	--end
+	--local t=rotate_inv(a.m,make_v(a.pos,b.pos))
+	--
+	--local adist,bdist=-32000,-32000
+	--local s=abs(t[1])-(a.extents[1]+v_dot(get_column(absc,1),b.extents))
+	--local asep,adist,aaxis,na=track_face_axis(~0,1,s,-32000,m_right(a.m), nil)
+	--if(asep) return
+
+	--s=abs(t[2])-(a.extents[2]+v_dot(get_column(absc,2),b.extents))
+	--asep,adist,aaxis,na=track_face_axis(aaxis,2,s,adist,m_up(a.m), na)
+	--if(asep) return
+
+	--s=abs(t[3])-(a.extents[3]+v_dot(get_column(absc,3),b.extents))
+	--asep,adist,aaxis,na=track_face_axis(aaxis,3,s,adist,m_fwd(a.m), na)
+	--if(asep) return
+
 	local edist,closest_edges=query_edge_direction(a,b)
 	if(edist>0) return
 
@@ -401,6 +378,7 @@ function ground_overlap(a,b)
 	local incident_face=out.incident:incident_face(v_up)
 	-- keep only points under the reference plane
 	for i=1,4 do
+		-- to world space
 		local v=transform(b.m,incident_face[i])
 		local dist=v[2]
 		-- "deep" enough contact?
@@ -433,9 +411,7 @@ end
 -- body contact point (world position)
 -- penetration
 function is_contact(a,p,n,d,sign)
-	sign=sign or 1
-	local padot=a:pt_velocity(p)
-	local vrel=sign*v_dot(n,padot)
+	local vrel=(sign or 1)*v_dot(n,a:pt_velocity(p))
 	-- resting condition or separating
 	if(d<k_small and vrel>-k_small_v) return
 	return true
@@ -443,38 +419,33 @@ end
 function make_contact_solver(a,b,n,p,dist)
 	-- valid contact (e.g)
 	if(not is_contact(a,p,n,dist,-1) and not is_contact(b,p,n,dist)) return
-	local nimpulse=0
-	local ra,rb=make_v(a.pos,p),make_v(b.pos,p)
+	local nimpulse,ra,rb=0,make_v(a.pos,p),make_v(b.pos,p)
 	local racn,rbcn=v_cross(ra,n),v_cross(rb,n)
-	
-	local nm=a.mass_inv+b.mass_inv
-	nm+=v_dot(racn,rotate(a.i_inv,racn))+v_dot(rbcn,rotate(b.i_inv,rbcn))
-	nm=1/nm
-
-	-- baumgarte
-	local bias=-k_bias*min(dist+k_slop)/time_dt
-
-	-- restitution bias
-	local dv=
-		v_dot(
+	local function dv_dot_n()
+		return 	v_dot(
 			v_add(
 				v_add(b.v,v_cross(b.w,rb)),
 				v_add(a.v,v_cross(a.w,ra)),
 				-1),
 			n)
+	end
+	local nm=1/(a.mass_inv+b.mass_inv+v_dot(racn,rotate(a.i_inv,racn))+v_dot(rbcn,rotate(b.i_inv,rbcn)))
+
+	-- baumgarte
+	local bias=-k_bias*min(dist+k_slop)/time_dt
+
+	-- restitution bias
+	local dv=dv_dot_n()
+
 	-- todo:find out unit??
 	if dv<-1 then
 		bias-=max(a.hardness,b.hardness)*dv
 	end
 	-- contact solver
 	return function()
-		local dv=
-			v_add(
-				v_add(b.v,v_cross(b.w,rb)),
-				v_add(a.v,v_cross(a.w,ra)),
-				-1)
+		local vn=dv_dot_n()
 
-		local lambda=nm*max(-v_dot(dv,n)+bias)
+		local lambda=nm*max(-vn+bias)
 		
 		-- clamp impulse (+overshoot control)
 		local tempn=nimpulse
@@ -535,7 +506,7 @@ function make_rigidbody(a)
 	end
 
 	-- 
-	local g={0,-9.81*a.mass,0}
+	local g={0,-24*a.mass,0}
 	local rb={
 		i_inv=is_static and make_m3(0,0,0) or make_m3(),
 		v=v_zero(),
@@ -740,17 +711,23 @@ function make_cam(pos)
 			-- update rotation
 			local m=make_m_from_euler(unpack(angle))	
 			-- inverse view matrix
-            m[2],m[5]=m[5],m[2]
-            m[3],m[9]=m[9],m[3]
-            m[7],m[10]=m[10],m[7]
-            --
-            self.m=m_x_m(m,{
+            self.m=m_x_m(m3_transpose(m),{
 				1,0,0,0,
 				0,1,0,0,
 				0,0,1,0,
 				-pos[1],-pos[2],-pos[3],1
 			})
             self.pos=pos
+
+			local m=make_m_from_euler(-angle[1],angle[2],angle[3])	
+            --
+            self.m_mirror=m_x_m(m3_transpose(m),{
+				1,0,0,0,
+				0,1,0,0,
+				0,0,1,0,
+				-pos[1],pos[2],-pos[3],1
+			})
+            self.pos_mirror={pos[1],-pos[2],pos[3]}
 		end,
 		project2d=function(self,p)
 			p=transform(self.m,p)
@@ -758,7 +735,7 @@ function make_cam(pos)
 				local w=64/p[3]
 				return 64+p[1]*w,64-p[2]*w,w
 			end
-		end
+		end		
 	}
 end
 
@@ -810,25 +787,25 @@ local v_cache_cls={
 
 		-- assume vertex is visible, compute 2d coords
 		local w=64/az
-		local a={ax,ay,az,outcode=outcode,x=64+ax*w,y=64-ay*w,w=w}
+		local a={ax,ay,az,outcode=outcode,x=64+ax*w,y=64-(t.flip and -1 or 1)*ay*w,w=w}
 		t[v]=a
 		return a
 	end
 }
 
-function collect_faces(thing,model,m,out)
+function collect_faces(cam,thing,model,m,out)
 	-- cam pos in object space
-	local cam_pos=transform_inv(m,_cam.pos)
+	local cam_pos=transform_inv(m,cam.pos)
 	-- sun vector in model space
 	local sun=rotate_inv(m,_sun_dir)
 
 	-- object to world
 	-- world to cam
 	-- vertex cache (and model context)
-	local v_cache=setmetatable({m=m_x_m(_cam.m,m)},v_cache_cls)
+	local v_cache=setmetatable({m=m_x_m(cam.m,m),flip=cam.flip or false},v_cache_cls)
 
 	for _,face in pairs(model.f) do
-		-- if v_dot(face.n,cam_pos)>face.dist then
+		if v_dot(face.n,cam_pos)>face.dist then
 			-- project vertices (always 4!!)
 			local v0,v1,v2,v3=v_cache[face[1]],v_cache[face[2]],v_cache[face[3]],v_cache[face[4]]
 			-- mix of near/far verts?
@@ -846,34 +823,48 @@ function collect_faces(thing,model,m,out)
 				end
 				if #verts>2 then
 					verts.face=face
-					verts.light=mid(-v_dot(sun,face.n),0,1)
+					verts.light=mid(-face.sign*sun[face.axis],0,1)
 					-- sort key
 					-- todo: improve
 					verts.key=(v0.w+v1.w+v2.w+v3.w)/4
-					verts.visible=v_dot(face.n,cam_pos)>face.dist
 					verts.thing=thing
 					verts.model=model
 					out[#out+1]=verts
 				end
 			end
-		--end
+		end
 ::skip::
 	end
 end
 
 -- draw face
 function draw_faces(faces,hit)
+
 	for i,d in ipairs(faces) do
 		-- todo: color ramp	
-		fillp()
+		--fillp()
 		--if(not d.visible) fillp(0xa5a5.8)
-		if(hit and hit.reference_face==d.face) polyfill(d,11)		
-		if(hit and hit.incident_face==d.face) polyfill(d,8)		
-		if d.visible then
-			polyfill(d,d.model.shadeless and d.model.color or (d.model.color+d.light*3))
-			polyline(d,d.thing.sleeping and 11 or 5)
+		--pal(_dithers[flr(12*(1-d.light))],2)
+		if _mirror then
+			fillp(0xf0f0.8)
+			polyfill(d,0x7c)			
+		else
+			fillp()
+			if d.model.shadeless then
+				--pal()
+				--fillp()
+			else
+				-- dithered fill mode
+				--fillp(0xa5a5|0b0.011)
+				pal(_dithers[flr(12*d.light)],2)
+			end
+			if d.face.uv then
+				tpoly(d,d.face.uv)
+			else
+				polyfill(d,d.model.color)
+			end
+			polyline(d,12)--d.thing.sleeping and 11 or 5)
 		end
-		--polyline(d,1)
 	end
 end
 
@@ -886,12 +877,12 @@ function draw_ground()
 		0,0,0,1
 	}
 	m_set_pos(m,{_cam.pos[1],-0.5,_cam.pos[3]})
-	collect_faces(_ground,_ground.model,m,out)
+	collect_faces(_cam,_ground,_ground.model,m,out)
 
     draw_faces(out)
 end
 
-_color=5
+_color=7
 function make_box(mass,extents,pos,q)
 	local ex,ey,ez=unpack(extents)
 	ex/=2
@@ -922,6 +913,9 @@ function make_box(mass,extents,pos,q)
 		-- faces
 		f=faces,
 		e={
+			-- head/tail: vertex reference
+			-- direction: axis direction
+			-- normals
 			-- bottom loop
 			{tail=1,head=2,direction=1 ,normals={faces[1],faces[2]}},
 			{tail=2,head=3,direction=3 ,normals={faces[1],faces[3]}},
@@ -955,7 +949,7 @@ function make_box(mass,extents,pos,q)
 	end
 
 	for _,f in pairs(faces) do
-		-- de-reference vertex indices
+		-- direct reference to vertex
 		for i=1,4 do
 			f[i]=verts[f[i]]
 		end
@@ -971,13 +965,18 @@ function make_box(mass,extents,pos,q)
 		end
 		f.sides=sides
 		-- normal
-		f.n=v_normz(
-				v_cross(
-					make_v(f[1],f[4]),
-					make_v(f[1],f[2])))
+		f.n=v_zero()
+		f.n[f.axis]=f.sign
 		-- fast viz check
 		f.dist=v_dot(f.n,f[1])
 	end
+	-- texture (single face only)
+	faces[2].uv={
+		0,2*ey,
+		2*ex,2*ey,
+		2*ex,0,
+		0,0
+	}
 	-- initial condition
 	local m=m_from_q(q)
 	m_set_pos(m,pos)
@@ -1036,49 +1035,36 @@ function _init()
 
 	_cam=make_cam({0,8,-20})
 
-	-- cube
-	--add(_things,
-	--	make_rigidbody(
-	--		make_box(
-	--			1,{5,5,5},
-	--			{0,50,0},make_q(v_normz({rnd(),rnd(),rnd()},rnd())))))
---
-	--add(_things,make_rigidbody(make_box(
-	--	1,{5,5,5},
-	--	{2,18,0},
-	--	make_q(v_up,rnd())
-	--)))
+	palt(0,false)
+	-- shading
+	for j=1,7,0.5 do
+		local dithered_fade={}    
+		for i=0,6 do
+			dithered_fade[i]=sget(i,j+0.5)|sget(i,j)<<4
+		end
+		_dithers[(j-1)*2]=dithered_fade
+	end
 
 	make_rigidbody(make_ground())
 
-	add(_things,
-		make_rigidbody(make_box(
-			1,{2,2,2},
-			{0,18,0},
-			make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-			--make_q(v_up,rnd())
-		))
-	)
-
-	_a_box=make_rigidbody(make_box(
-		1,{5,2,5},
-		{0,15,0},
-		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-		--make_q(v_up,rnd())
-	))
-	add(_things,_a_box)
-
-	_b_box=make_rigidbody(make_box(
-		1,{5,5,5},
-		{2,8,0},
-		--make_q(v_up,0)
-		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-		--q_x_q(
-		--	make_q({1,0,0},0.125),
-		--	make_q({0,1,0},0.125))
-	))
-	
-	add(_things,_b_box)
+	local pins={
+		{0,0,0},
+		{-2,0,5},
+		{2,0,5},
+		{-4,0,10},
+		{0,0, 10},
+		{4,0, 10},
+	}
+	for _,q in pairs(pins) do
+		add(_things,
+			make_rigidbody(make_box(
+				1,{2,6,2},
+				{q[1],3,q[3]},
+				--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+				make_q(v_up,rnd())
+			))
+		)
+	end
 
 	-- floor
 	_ground=make_box(0,{500,1,500},{0,-0.5,0},make_q(v_up,0))
@@ -1086,33 +1072,45 @@ function _init()
 	_ground.model.color=6
 end
 
+local _fire_ttl=0
+
 function _update()
 	_cam:update()
-
-	-- update "test box"
-	-- local m=_cam.m
-	-- _incident_box.pos=v_add(_cam.pos,{m[3],m[7],m[11]},35)
-	-- _incident_box.m=m3_transpose({unpack(m)})
-	-- m_set_pos(_incident_box.m,_incident_box.pos)
-
-	local rot_axis=v_normz({1,1,0})	
-	-- local m=m_from_q(make_q(v_up,time()/8))
-	-- _b_box.pos={0,10*cos(time()/16),0}
-	-- m_set_pos(m,_b_box.pos)
-	--_b_box.m=m
--- 
-	-- local m=m_from_q(
-	-- 	q_x_q(
-	-- 		make_q(rot_axis,time()/32),
-	-- 		make_q(v_up,time()/16)))
-	-- local m=m_from_q(make_q({0,0,1},time()/16))
-	-- -- local m=_a_box.m
-	-- _a_box.pos={7,5*cos(time()/16),0}
-	-- m_set_pos(m,_a_box.pos)
-	-- _a_box.m=m
---
-    world:update()
 	
+	_fire_ttl-=1
+	if _fire_ttl<0 and btnp(4) then
+		_fire_ttl=30
+		add(_particles,{
+			pos=v_clone(_cam.pos),
+			v={_cam.m[3],_cam.m[7],_cam.m[11]},
+			ttl=90+rnd(30)
+		})
+	end
+
+	for i=#_particles,1,-1 do
+		local p=_particles[i]
+		p.ttl-=1
+		if p.ttl<0 then
+			deli(_particles,i)
+		else
+			local next_pos=v_add(p.pos,p.v,4)
+			local hit=hitscan(_things,next_pos,p.pos)
+			if hit then
+				local f=v_normz(make_v(p.pos,next_pos))					
+				v_scale(f,200)
+				hit.owner:add_force(f,hit)
+				deli(_particles,i)
+			elseif next_pos[2]<0.25 then
+				deli(_particles,i)
+			else
+				p.pos=next_pos
+				p.v[2]-=0.05
+			end
+		end
+	end
+
+    world:update()
+
 	time_t+=1
 end
 
@@ -1125,16 +1123,75 @@ function draw_edge(a,b,c)
 end
 
 function _draw()
-    cls()
+    cls(12)
 	draw_ground()
 
     local out={}
 	for _,thing in pairs(_things) do
-		collect_faces(thing,thing.model,thing.m,out)
+		collect_faces({pos=_cam.pos_mirror,m=_cam.m_mirror,flip=true},thing,thing.model,thing.m,out)
 	end
 
 	sort(out)
 
+	_mirror=true
     draw_faces(out)
+
+    local out={}
+	for _,thing in pairs(_things) do
+		collect_faces(_cam,thing,thing.model,thing.m,out)
+	end
+
+	sort(out)
+
+	_mirror=nil
+    draw_faces(out)
+
+	for _,p in pairs(_particles) do
+		local x0,y0,w0=_cam:project2d(p.pos)
+		if w0 then
+			circfill(x0,y0,w0,6)
+			circ(x0,y0,w0,7)
+		end
+	end
 end
 
+__gfx__
+00000000777777777777777777777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+11111111777777777777777777707777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+222eeef7777777777777077777000777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+33bbba77777777777770007777000077777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+44499ff7777777777700007777700777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+55566f77777777777700007777777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+666ff77a777777777770007777777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+777777aa777777777777777777777777777777770000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+8888eef7000000007777777777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+999ffaa7000000007777777777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+aaaaa777000000007777779977777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+bbbbbb77000000007777799999777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ccccc777000000007777799999997777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ddd6677a000000007777799999999777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+eeefff77000000007777779999777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+fff77777000000007777779777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007777777777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007777777777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007777777777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007777777777777007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007707777777777707000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007007707700700777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007777700700777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007777777777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007777777777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007777777777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007777777777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000007777777777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000006777777777777777000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000006777777777777776000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000006667777777777766000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000006666777777777666000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+__map__
+0101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0203000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+1213000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+2223000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+3233000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
