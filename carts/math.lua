@@ -188,12 +188,12 @@ end
 -- generic matrix inverse
 function m3_inv(me)
 	local te={
-		 me[11]*me[6] -me[7]*me[10], me[11]*me[2]+me[3]*me[10], me[7]*me[2]-me[3]*me[6],0,
-		-me[11]*me[5] +me[7]*me[9], me[11]*me[1]-me[3]*me[9],-me[7]*me[1]+me[3]*me[5],0,
-		 me[11]*me[5] -me[6]*me[10],-me[10]* me[1]+me[2]*me[9], me[6]*me[1]-me[2]*me[5],0,
+		 me[11]*me[6]-me[7]*me[10], me[11]*me[2]+me[3]*me[10], me[7]*me[2]-me[3]*me[6],0,
+		-me[11]*me[5]+me[7]*me[9], me[11]*me[1]-me[3]*me[9],-me[7]*me[1]+me[3]*me[5],0,
+		 me[11]*me[5]-me[6]*me[10],-me[10]* me[1]+me[2]*me[9], me[6]*me[1]-me[2]*me[5],0,
 		0,0,0,1}
 
-	local det = me[1]*te[1]+me[2]*te[5]+me[3]*te[9]
+	local det=me[1]*te[1]+me[2]*te[5]+me[3]*te[9]
 	-- not inversible?
 	assert(det>0)
 	m_scale(te,1/det)

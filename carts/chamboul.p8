@@ -95,16 +95,18 @@ function get_support(vertices,n)
 	return vmax
 end
 
-function query_face_directions(a,b)
+function query_face_directions(a,b,tx)
 	local ma,mb=a.m,b.m
 	-- B rotation in A space
-	local tx=m_x_m(
-		m3_transpose(a.m),{
-		1,0,0,0,
-		0,1,0,0,
-		0,0,1,0,
-		-a.pos[1],-a.pos[2],-a.pos[3],1})
-	tx=m_x_m(tx,b.m)
+	if not tx then
+		tx=m_x_m(
+			m3_transpose(a.m),{
+			1,0,0,0,
+			0,1,0,0,
+			0,0,1,0,
+			-a.pos[1],-a.pos[2],-a.pos[3],1})
+		tx=m_x_m(tx,b.m)
+	end
 
 	-- cache B vertices
 	local vb={}
@@ -168,16 +170,7 @@ function rotate_axis(tx,axis,sign)
 	return {sign*tx[axis+1],sign*tx[axis+2],sign*tx[axis+3]} 
 end
 
-function query_edge_direction(a,b)
-	-- B in A space
-	local tx=m_x_m(
-		m3_transpose(a.m),{
-		1,0,0,0,
-		0,1,0,0,
-		0,0,1,0,
-		-a.pos[1],-a.pos[2],-a.pos[3],1})
-	tx=m_x_m(tx,b.m)
-
+function query_edge_direction(a,b,tx)
 	local averts,bverts=a.model.v,b.model.v
 	local dmax,closest_pair=-32000,{}
 	for _,ea in pairs(a.model.e) do
@@ -245,7 +238,15 @@ function overlap(a,b)
 	if(a.is_ground) return ground_overlap(a,b)
 	if(b.is_ground) return ground_overlap(b,a)
 	
-	local adist,aface=query_face_directions(a,b)
+	-- B in A space
+	local tx=m_x_m(
+		m3_transpose(a.m),{
+		1,0,0,0,
+		0,1,0,0,
+		0,0,1,0,
+		-a.pos[1],-a.pos[2],-a.pos[3],1})
+	tx=m_x_m(tx,b.m)
+	local adist,aface=query_face_directions(a,b,tx)
 	if(adist>0) return
 	local bdist,bface=query_face_directions(b,a)
 	if(bdist>0) return
@@ -270,7 +271,7 @@ function overlap(a,b)
 	--asep,adist,aaxis,na=track_face_axis(aaxis,3,s,adist,m_fwd(a.m), na)
 	--if(asep) return
 
-	local edist,closest_edges=query_edge_direction(a,b)
+	local edist,closest_edges=query_edge_direction(a,b,tx)
 	if(edist>0) return
 
 	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
@@ -297,37 +298,39 @@ function overlap(a,b)
 		--	transform(b.m,b.model.v[eb.tail]),8)
 		--	flip()
 	else
+		local reference_face
 		if 0.95*bdist > adist+0.01 then
 			--printh(tostr(time()).."\t face B contact")
 			out.reference=b
 			out.incident=a
-			out.reference_face=bface
-			out.flip=true
-			out.n=rotate(b.m,bface.n)
+			reference_face=bface
 		else
 			--printh(tostr(time()).."\t face A contact")
 			out.reference=a
 			out.incident=b
-			out.reference_face=aface	
-			out.n=rotate(a.m,aface.n)
+			reference_face=aface	
 			--v_scale(out.n,-1)
 		end
+		out.n=rotate(out.reference.m,reference_face.n)
 		-- find incident face		
 		local incident_face=out.incident:incident_face(out.n)
 		-- clip incident with reference sides
-		local tx=m_x_m(
-			m3_transpose(out.reference.m),{
-			1,0,0,0,
-			0,1,0,0,
-			0,0,1,0,
-			-out.reference.pos[1],-out.reference.pos[2],-out.reference.pos[3],1})
-		tx=m_x_m(tx,out.incident.m)
+		if out.reference!=a then
+			tx=m_x_m(
+				m3_transpose(out.reference.m),{
+				1,0,0,0,
+				0,1,0,0,
+				0,0,1,0,
+				-out.reference.pos[1],-out.reference.pos[2],-out.reference.pos[3],1})
+			tx=m_x_m(tx,out.incident.m)
+		end
 		-- convert incident face into reference space
 		for i=1,4 do
 			add(contacts,transform(tx,incident_face[i]))
 		end
-		for _,side in pairs(out.reference_face.sides) do
-			if(#contacts==0) break			
+		for _,side in pairs(reference_face.sides) do
+			-- for some reason clipping removed all points
+			if(#contacts==0) return			
 			contacts=axis_poly_clip(
 				side.axis,
 				side.sign*side.dist,
@@ -335,7 +338,7 @@ function overlap(a,b)
 				-side.sign)	
 		end
 		-- keep only points under the reference plane
-		local side=out.reference_face
+		local side=reference_face
 		for i=#contacts,1,-1 do
 			local v=contacts[i]
 			local dist=v_dot(side.n,v)-side.dist
