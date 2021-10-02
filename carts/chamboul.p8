@@ -416,46 +416,19 @@ function is_contact(a,p,n,d,sign)
 	if(d<k_small and vrel>-k_small_v) return
 	return true
 end
-function make_contact_solver(a,b,n,p,dist)
+function make_contact_solver(a,b,n,p,dist,tangents)
 	-- valid contact (e.g)
 	if(not is_contact(a,p,n,dist,-1) and not is_contact(b,p,n,dist)) return
 	local nimpulse,ra,rb=0,make_v(a.pos,p),make_v(b.pos,p)
 	local racn,rbcn=v_cross(ra,n),v_cross(rb,n)
-	local function dv_dot_n()
-		return 	v_dot(
-			v_add(
-				v_add(b.v,v_cross(b.w,rb)),
-				v_add(a.v,v_cross(a.w,ra)),
-				-1),
-			n)
+	-- relative velocity at contact point
+	local function rel_vel()
+		return 	v_add(
+					v_add(b.v,v_cross(b.w,rb)),
+					v_add(a.v,v_cross(a.w,ra)),
+					-1)
 	end
-	local nm=1/(a.mass_inv+b.mass_inv+v_dot(racn,rotate(a.i_inv,racn))+v_dot(rbcn,rotate(b.i_inv,rbcn)))
-
-	-- baumgarte
-	local bias=-k_bias*min(dist+k_slop)/time_dt
-
-	-- restitution bias
-	local dv=dv_dot_n()
-
-	-- todo:find out unit??
-	if dv<-1 then
-		bias-=max(a.hardness,b.hardness)*dv
-	end
-	-- contact solver
-	return function()
-		local vn=dv_dot_n()
-
-		local lambda=nm*max(-vn+bias)
-		
-		-- clamp impulse (+overshoot control)
-		local tempn=nimpulse
-		nimpulse=max(tempn+lambda)
-		lambda=nimpulse-tempn			
-	
-		-- impulse too small?
-		if(lambda<k_small) return
-
-		-- correct linear velocity
+	local function apply_impulse(n,lambda)
 		local impulse=v_clone(n)
 		v_scale(impulse,lambda)
 		a.v=v_add(a.v,impulse,-a.mass_inv)
@@ -475,6 +448,69 @@ function make_contact_solver(a,b,n,p,dist)
 				b.i_inv,
 				v_cross(rb,impulse)
 			))
+	end
+
+	local nm=a.mass_inv+b.mass_inv
+	local tm,timpulse={nm,nm},{0,0}
+
+	-- normal mass
+	nm+=v_dot(racn,rotate(a.i_inv,racn))+v_dot(rbcn,rotate(b.i_inv,rbcn))
+	nm=1/nm
+
+	-- tangent mass
+	for i=1,2 do
+		local ract=v_cross(tangents[i], ra)
+		local rbct=v_cross(tangents[i], rb)
+
+		tm[i]+=v_dot( ract, rotate(a.i_inv,ract))+v_dot( rbct, rotate(b.i_inv,rbct))
+		tm[i]=1/tm[i]				
+	end
+
+	-- baumgarte
+	local bias=-k_bias*min(dist+k_slop)/time_dt
+
+	-- restitution bias
+	local dv=v_dot(rel_vel(),n)
+
+	-- todo:find out unit??
+	if dv<-1 then
+		bias-=max(a.hardness,b.hardness)*dv
+	end
+	local friction=sqrt(a.friction*b.friction)
+
+	-- contact solver
+	return function()
+		local dv=rel_vel()
+
+		-- friction impulse
+		for i=1,2 do
+			local lambda=-v_dot(dv,tangents[i])*tm[i]
+
+			-- calculate frictional impulse
+			local maxlambda=friction*nimpulse
+
+			-- clamp frictional impulse
+			local oldpt=timpulse[i]
+			timpulse[i]=mid(oldpt+lambda, -maxlambda, maxlambda)
+			lambda = timpulse[i]-oldpt
+
+			-- apply friction impulse
+			apply_impulse(tangents[i],lambda)
+		end
+
+		-- normal impulse
+		local lambda=nm*max(-v_dot(dv,n)+bias)
+		
+		-- clamp impulse (+overshoot control)
+		local tempn=nimpulse
+		nimpulse=max(tempn+lambda)
+		lambda=nimpulse-tempn			
+	
+		-- impulse too small?
+		-- if(lambda<k_small) return
+
+		-- correct linear velocity
+		apply_impulse(n,lambda)
 		return true
 	end
 end
@@ -597,8 +633,10 @@ function world:update()
 			if m then
 				a.sleeping=nil
 				b.sleeping=nil
+				-- find tangent vectors
+				local tangents={make_basis(m.n)}
 				for _,p in pairs(m.contacts) do										
-					add(contacts,make_contact_solver(m.reference,m.incident,m.n,p,p.dist))
+					add(contacts,make_contact_solver(m.reference,m.incident,m.n,p,p.dist,tangents))
 				end
 			end
 		end
@@ -863,7 +901,7 @@ function draw_faces(faces,hit)
 			else
 				polyfill(d,d.model.color)
 			end
-			polyline(d,12)--d.thing.sleeping and 11 or 5)
+			polyline(d,12)--d.thing.sleeping and 11 or 12)
 		end
 	end
 end
@@ -984,6 +1022,7 @@ function make_box(mass,extents,pos,q)
 	return {
 		mass=mass,
 		hardness=0.4,
+		friction=0.8,
 		extents={ex,ey,ez},
 		model=model,
 		pos=v_clone(pos),
@@ -1011,6 +1050,7 @@ function make_ground()
 		is_ground=true,
 		mass=0,
 		hardness=0.2,
+		friction=0.4,
 		model=model,
 		pos=v_zero(),
 		q=make_q(v_up,0),

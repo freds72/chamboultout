@@ -80,6 +80,23 @@ function v_normz(v)
 	return {x/d,y/d,z/d},d
 end
 
+-- http://box2d.org/2014/02/computing-a-basis/
+function make_basis(a)
+	-- Suppose vector a has all equal components and is a unit vector: a = (s, s, s)
+	-- Then 3*s*s = 1, s = sqrt(1/3) = 0.57735027. This means that at least one component of a
+	-- unit vector must be greater or equal to 0.57735027. Can use SIMD select operation.
+
+	local b
+	if abs(a[1]) >= 0.57735027 then
+		b={a[2], -a[1], 0}
+	else
+		b={0,a[3],-a[2]}
+	end
+	
+	b=v_normz(b)
+	return b,v_cross(a,b)
+end
+
 -- matrix functions
 -- new matrix from euler angles
 function make_m_from_euler(x,y,z)
