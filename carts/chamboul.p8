@@ -145,12 +145,12 @@ function build_minkowski_face(ea,eb,tx)
 end
 
 function find_edge_closest_points(p1,q1,p2,q2)	
-	local p1,q1,p2,q2=v_clone(p1),v_clone(q1),v_clone(p2),v_clone(q2)
 	-- avoid overflow
-	v_scale(p1,0.0625)
-	v_scale(q1,0.0625)
-	v_scale(p2,0.0625)
-	v_scale(q2,0.0625)
+	local p1,q1,p2,q2=
+		v_clone(p1,0.0625),
+		v_clone(q1,0.0625),
+		v_clone(p2,0.0625),
+		v_clone(q2,0.0625)
 	local d1,d2=make_v(p1,q1),make_v(p2,q2)
 	local r=make_v(p1,p2)
 	local a,e=v_dot(d1,d1),v_dot(d2,d2)
@@ -309,7 +309,6 @@ function overlap(a,b)
 			out.reference=a
 			out.incident=b
 			reference_face=aface	
-			--v_scale(out.n,-1)
 		end
 		out.n=rotate(out.reference.m,reference_face.n)
 		-- find incident face		
@@ -431,27 +430,6 @@ function make_contact_solver(a,b,n,p,dist,tangents)
 					v_add(a.v,v_cross(a.w,ra)),
 					-1)
 	end
-	local function apply_impulse(n,lambda)
-		local impulse=v_clone(n)
-		v_scale(impulse,lambda)
-		a.v=v_add(a.v,impulse,-a.mass_inv)
-		-- correct angular velocity
-		a.w=v_add(
-			a.w,
-			rotate(
-				a.i_inv,
-				v_cross(ra,impulse)
-			),
-			-1)
-		b.v=v_add(b.v,impulse,b.mass_inv)
-		-- correct angular velocity
-		b.w=v_add(
-			b.w,
-			rotate(
-				b.i_inv,
-				v_cross(rb,impulse)
-			))
-	end
 
 	local nm=a.mass_inv+b.mass_inv
 	local tm,timpulse={nm,nm},{0,0}
@@ -465,7 +443,7 @@ function make_contact_solver(a,b,n,p,dist,tangents)
 		local ract=v_cross(tangents[i], ra)
 		local rbct=v_cross(tangents[i], rb)
 
-		tm[i]+=v_dot( ract, rotate(a.i_inv,ract))+v_dot( rbct, rotate(b.i_inv,rbct))
+		tm[i]+=v_dot(ract,rotate(a.i_inv,ract))+v_dot(rbct,rotate(b.i_inv,rbct))
 		tm[i]=1/tm[i]				
 	end
 
@@ -498,7 +476,9 @@ function make_contact_solver(a,b,n,p,dist,tangents)
 			lambda = timpulse[i]-oldpt
 
 			-- apply friction impulse
-			apply_impulse(tangents[i],lambda)
+			local impulse=v_clone(tangents[i],lambda)
+			a:apply_impulse(impulse,ra,-1)
+			b:apply_impulse(impulse,rb,1)
 		end
 
 		-- normal impulse
@@ -513,7 +493,10 @@ function make_contact_solver(a,b,n,p,dist,tangents)
 		-- if(lambda<k_small) return
 
 		-- correct linear velocity
-		apply_impulse(n,lambda)
+		local impulse=v_clone(n,lambda)
+		a:apply_impulse(impulse,ra,-1)
+		b:apply_impulse(impulse,rb,1)
+
 		return true
 	end
 end
@@ -529,9 +512,8 @@ function make_rigidbody(a)
 	local ibody_inv
 	if a.mass>0 then
 		local ex,ey,ez=unpack(a.extents)
-		local size={ex*ex,ey*ey,ez*ez}
 		-- 4=square(2*extents)
-		v_scale(size,4)
+		local size={4*ex*ex,4*ey*ey,4*ez*ez}
 		local ibody=make_m3(size[2]+size[3],size[1]+size[3],size[1]+size[2])
 		-- 8=2*2*2 extents
 		local mass=8*a.mass*(ex*ey*ez)*(a.density or 0.1)
@@ -558,7 +540,7 @@ function make_rigidbody(a)
 		end,		
 		-- world velocity
 		pt_velocity=function(self,p)
-			return v_add(v_cross(self.w,make_v(self.pos,p)),self.v)
+			return v_add(self.v,v_cross(self.w,make_v(self.pos,p)))
 		end,
 		incident_face=function(self,rn)
 			-- world to local (normal)
@@ -576,8 +558,21 @@ function make_rigidbody(a)
 		add_force=function(self,f,p)
 			if(is_static) return
 			self.sleeping=nil
-			force=v_add(force,f,a.mass)
+			force=v_add(force,f,self.mass)
 			torque=v_add(torque,v_cross(make_v(self.pos,p),f))
+		end,
+		-- impulse at *local* r point
+		apply_impulse=function(self,f,r,sign)
+			if(is_static) return
+			self.v=v_add(self.v,f,sign*self.mass_inv)
+			-- correct angular velocity
+			self.w=v_add(
+				self.w,
+				rotate(
+					self.i_inv,
+					v_cross(r,f)
+				),
+				sign)
 		end,
 		-- apply forces & torque for iteration
 		prepare=function(self,dt)
@@ -664,58 +659,31 @@ end
 -->8
 -- 3d engine
 -- sort
--- https://github.com/morgan3d/misc/tree/master/p8sort
---
-function sort(data)
-	local n = #data
-	if(n<2) return
+-- radix sort
+-- from james edge
+function sort(buffer1)
+  local len, buffer2, idx, count = #buffer1, {}, {}, {}
 
-	-- form a max heap
-	for i = n\2+1, 1, -1 do
-	 -- m is the index of the max child
-	 local parent, value, m = i, data[i], i + i
-	 local key = value.key
+  for shift=0,5,5 do
+    for i=0,31 do count[i]=0 end
 
-	 while m <= n do
-	  -- find the max child
-	  if ((m < n) and (data[m + 1].key > data[m].key)) m += 1
-	  local mval = data[m]
-	  if (key > mval.key) break
-	  data[parent] = mval
-	  parent = m
-	  m += m
-	 end
-	 data[parent] = value
-	end
+    for i,b in pairs(buffer1) do
+      local k=(b.key>>shift)&31
+      idx[i]=k
+      count[k]+=1
+    end
 
-	-- read out the values,
-	-- restoring the heap property
-	-- after each step
-	for i = n, 2, -1 do
-	 -- swap root with last
-	 local value = data[i]
-	 data[i], data[1] = data[1], value
+    for i=1,31 do count[i]+=count[i-1] end
 
-	 -- restore the heap
-	 local parent, terminate, m = 1, i - 1, 2
-	 local key = value.key
+    for i=len,1,-1 do
+      local k=idx[i]
+      local c=count[k]
+      buffer2[c]=buffer1[i]
+      count[k]=c-1
+    end
 
-	 while m <= terminate do
-	  local mval = data[m]
-	  local mkey = mval.key
-	  if (m < terminate) and (data[m + 1].key > mkey) then
-	   m += 1
-	   mval = data[m]
-	   mkey = mval.key
-	  end
-	  if (key > mkey) break
-	  data[parent] = mval
-	  parent = m
-	  m += m
-	 end
-
-	 data[parent] = value
-	end
+    buffer1, buffer2 = buffer2, buffer1
+  end
 end
 
 
@@ -828,7 +796,7 @@ local v_cache_cls={
 
 		-- assume vertex is visible, compute 2d coords
 		local w=64/az
-		local a={ax,ay,az,outcode=outcode,x=64+ax*w,y=64-ay*w,w=w}
+		local a={ax,ay,az,outcode=outcode}
 		t[v]=a
 		return a
 	end
@@ -855,19 +823,21 @@ function collect_faces(cam,thing,model,m,out)
 				-- mix of near+far vertices?
 				if (v0.outcode|v1.outcode|v2.outcode|v3.outcode)&2!=0 then
 					verts=axis_poly_clip(3,z_near,verts)
-					-- project
+				end
+				if #verts>2 then
+					-- project + get sort key
+					local key=0
 					for _,v in pairs(verts) do
 						local w=64/v[3]
 						v.x=64+v[1]*w
 						v.y=64-v[2]*w
+						key+=w
 					end
-				end
-				if #verts>2 then
 					verts.face=face
-					verts.light=mid(-face.sign*sun[face.axis],0,1)
+					verts.light=mid(-face.sign*sun[face.axis],-1,1)
 					-- sort key
 					-- todo: improve
-					verts.key=(v0.w+v1.w+v2.w+v3.w)/4
+					verts.key=(key<<4)/#verts
 					verts.thing=thing
 					verts.model=model
 					out[#out+1]=verts
@@ -879,7 +849,7 @@ function collect_faces(cam,thing,model,m,out)
 end
 
 -- draw face
-function draw_faces(faces,hit)
+function draw_faces(faces)
 	
 	for i,d in ipairs(faces) do
 		-- todo: color ramp	
@@ -891,14 +861,13 @@ function draw_faces(faces,hit)
 			polyfill(d,0x7d)			
 		else
 			fillp(0xa5a5|0b0.011)
-			local base=_dithers[flr(12*d.light)]
+			local base=_dithers[flr(6+6*d.light)]
 			pal(base,2)
 			if d.face.uv then
 				tpoly(d,d.face.uv)
 			else
 				polyfill(d,base[d.model.color])
 			end
-			fillp()
 			polyline(d,5)--d.thing.sleeping and 11 or 12)
 		end
 	end
@@ -918,7 +887,7 @@ function draw_ground()
 		{m[1],m[5],m[9]}
 	local x,y,z=unpack(_cam.pos)
 	local scale=4
-	local horiz=130
+	local horiz,hx=130,0
 	for i=127,0,-1 do
 		local vu=v_add(fwd,up,(64-i)/64)
 		-- vector toward ground?
@@ -938,6 +907,10 @@ function draw_ground()
 	--rectfill(0,horiz-2,128,horiz-2,7)
 	--rectfill(0,horiz-1,128,horiz-1,5)
 	--rectfill(0,horiz,128,horiz,6)
+
+	local sun=v_add(_cam.pos,_sun_dir,-16)
+	local x0,y0,w0=_cam:project2d(sun)
+	if(w0) circfill(x0,y0,12,7)
 
 	poke4(0x5f38, 0)
 end
@@ -1098,12 +1071,12 @@ function _init()
 
 	palt(0,false)
 	-- shading
-	for j=1,7,0.5 do
+	for i=0,6,0.5 do
 		local dithered_fade={}    
-		for i=0,6 do
-			dithered_fade[i]=sget(i,j+0.5)|sget(i,j)<<4
+		for j=0,15 do
+			dithered_fade[j]=sget(i+0.5,j)|sget(i,j)<<4
 		end
-		_dithers[(j-1)*2]=dithered_fade
+		_dithers[i*2]=dithered_fade
 	end
 
 	make_rigidbody(make_ground())
@@ -1195,6 +1168,7 @@ function _draw()
 
 	-- ground
 	palt(0,true)
+	fillp()
 	draw_ground()
 	palt(0,false)
 
@@ -1221,20 +1195,20 @@ end
 __gfx__
 00000000777777777777777777777777777777770000770000000000000000000770000000770700000000000007707700000000000000000000000000000000
 11111111777777777777777777707777777777770000770007700070000000007770000000707077000000000000077700000000000000000000000000000000
-222eeef7777777777777077777000777777777777000000007700000000000000770000000707770000000000000000700000000000000000000000000000000
-33bbba77777777777770007777000077777777770000000000000000000000007770000000707700000000000000000700000000000000000000000000000000
-44499ff7777777777700007777700777777777770000000700000000000000007000000000770700000077000000000700000000000000000000000000000000
-55566f77777777777700007777777777777777770070000000700000000000007000070000777000000770000000000700000000000000000000000000000000
-666ff77a777777777770007777777777777777770077000000000000000000007000077770770000000770000000000700000000000000000000000000000000
-777777aa777777777777777777777777777777770000000000000700000000007770007777700000000000000000007700000000000000000000000000000000
-8888eef7000000007777777777777777000000000007700000000000000000007777077700770000000000000000077700000000000000000000000000000000
-999ffaa7000000007777777777777777000000000077777000007700000000007777777777770000000000000770777700000000000000000000000000000000
-aaaaa777000000007777779977777777000000000770077000777770000000007077777777777000000000007777777700000000000000000000000000000000
-bbbbbb77000000007777799999777777000000000770007700777770000000007700007777770000000000000007777700000000000000000000000000000000
-ccccc777000000007777799999997777000000000777000700077770000000007700000770000000000000000000777700000000000000000000000000000000
-ddd6677a000000007777799999999777000000000007777700007700000000007000000000000000000000000000077700000000000000000000000000000000
-eeefff77000000007777779999777777000000000000007000000000000000007000000000000000000000000000077700000000000000000000000000000000
-fff77777000000007777779777777777000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000
+11222ee7777777777777077777000777777777777000000007700000000000000770000000707770000000000000000700000000000000000000000000000000
+1533bba7777777777770007777000077777777770000000000000000000000007770000000707700000000000000000700000000000000000000000000000000
+244499a7777777777700007777700777777777770000000700000000000000007000000000770700000077000000000700000000000000000000000000000000
+11556677777777777700007777777777777777770070000000700000000000007000070000777000000770000000000700000000000000000000000000000000
+15566777777777777770007777777777777777770077000000000000000000007000077770770000000770000000000700000000000000000000000000000000
+55667777777777777777777777777777777777770000000000000700000000007770007777700000000000000000007700000000000000000000000000000000
+1288ee77000000007777777777777777000000000007700000000000000000007777077700770000000000000000077700000000000000000000000000000000
+2499ffa7000000007777777777777777000000000077777000007700000000007777777777770000000000000770777700000000000000000000000000000000
+224aaaa7000000007777779977777777000000000770077000777770000000007077777777777000000000007777777700000000000000000000000000000000
+5533bb77000000007777799999777777000000000770007700777770000000007700007777770000000000000007777700000000000000000000000000000000
+155dccc7000000007777799999997777000000000777000700077770000000007700000770000000000000000000777700000000000000000000000000000000
+11dd6677000000007777799999999777000000000007777700007700000000007000000000000000000000000000077700000000000000000000000000000000
+222eeff7000000007777779999777777000000000000007000000000000000007000000000000000000000000000077700000000000000000000000000000000
+22eeff77000000007777779777777777000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000
 00000000000000007777777777777777000000007777777700000000000000007000000077700000000007777000007700000000000000000000000000000000
 00000000000000007777777777777777000000000000777700000700000000000000000077770000007777777770000700000000000000000000000000000000
 00000000000000007777777777777777000000000000077770000770000000000000007777770000007777777770000000000000000000000000000000000000

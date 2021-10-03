@@ -13,8 +13,9 @@ end
 function v_zero()
 	return {0,0,0}
 end
-function v_clone(v)
-	return {v[1],v[2],v[3]}
+function v_clone(v,scale)
+	scale=scale or 1
+	return {scale*v[1],scale*v[2],scale*v[3]}
 end
 function v_min(a,b)
 	return {min(a[1],b[1]),min(a[2],b[2]),min(a[3],b[3])}
