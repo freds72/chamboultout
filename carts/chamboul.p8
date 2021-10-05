@@ -9,11 +9,10 @@ __lua__
 #include polyfill.lua
 #include math.lua
 
+-- globals
 local time_t,time_dt=0,1/30
-local _things={}
-local physic_actors={}
+local _things,_scene={}
 local _sun_dir={0,-0.707,0.707}
-local world={}
 local _dithers={}
 local _particles={}
 
@@ -172,7 +171,7 @@ end
 
 function query_edge_direction(a,b,tx)
 	local averts,bverts=a.model.v,b.model.v
-	local dmax,closest_pair=-32000,{}
+	local dmax,closest_solution=-32000
 	for _,ea in pairs(a.model.e) do
 		local eahead=averts[ea.head]
 		local eadir=ea.direction
@@ -196,23 +195,19 @@ function query_edge_direction(a,b,tx)
 				if(d>0) return d
 				if d>dmax then
 					dmax=d
-					closest_pair.dist=d
-					closest_pair.ea=ea
-					closest_pair.eb=eb
-
-					-- find closest point
-					local c1,c2=find_edge_closest_points(
-						eahead,averts[ea.tail],
-						ebhead,transform(tx,bverts[eb.tail]))
-					closest_pair.c1=c1
-					closest_pair.c2=c2
-					closest_pair.n=axis
+					-- pin loop references
+					local ea,eb=ea,eb
+					closest_solution=function()
+						return axis,d,find_edge_closest_points(
+							eahead,averts[ea.tail],
+							ebhead,transform(tx,bverts[eb.tail]))
+					end					
 				end
 			end	
 ::parallel::			
 		end
 	end
-	return dmax,closest_pair
+	return dmax,closest_solution
 end
 
 -- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
@@ -271,23 +266,22 @@ function overlap(a,b)
 	--asep,adist,aaxis,na=track_face_axis(aaxis,3,s,adist,m_fwd(a.m), na)
 	--if(asep) return
 
-	local edist,closest_edges=query_edge_direction(a,b,tx)
+	local edist,closest_solution=query_edge_direction(a,b,tx)
 	if(edist>0) return
 
 	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
 	local out,contacts={},{}
 	if 0.95*edist>max(adist,bdist)+0.01 then
 		--printh(tostr(time()).."\t edge contact")
-		local ea,eb=closest_edges.ea,closest_edges.eb
-		out.edges={ea,eb}	
+		local axis,dist,c1,c2=closest_solution()
 		out.reference=a
 		out.incident=b
-		out.n=rotate(a.m,closest_edges.n)
-		local c=transform(a.m,v_add(closest_edges.c1,closest_edges.c2))
+		out.n=rotate(a.m,axis)
+		local c=transform(a.m,v_add(c1,c2))
 		-- middle point
 		v_scale(c,0.5)
-		c.dist=closest_edges.dist		
-		add(contacts,c)			
+		c.dist=dist		
+		add(contacts,c)		
 		-- transform edge in world space
 		-- debug
 		--draw_edge(
@@ -501,159 +495,181 @@ function make_contact_solver(a,b,n,p,dist,tangents)
 	end
 end
 
--- rigid body extension for a given actor
--- bounding box
-function make_rigidbody(a)
-	local bbox=a.model
-	local force,torque=v_zero(),v_zero()
-	local is_static=false
+-- physic world "scene"
+function make_scene()
+	local physic_actors,contacts={},{}
+	-- unique id per rigid body
+	local _id=0x0.0001
 
-	-- compute (inverse) inertia tensor
-	local ibody_inv
-	if a.mass>0 then
-		local ex,ey,ez=unpack(a.extents)
-		-- 4=square(2*extents)
-		local size={4*ex*ex,4*ey*ey,4*ez*ez}
-		local ibody=make_m3(size[2]+size[3],size[1]+size[3],size[1]+size[2])
-		-- 8=2*2*2 extents
-		local mass=8*a.mass*(ex*ey*ez)*(a.density or 0.1)
-		m_scale(ibody,mass/12)
-		
-		-- invert 
-		ibody_inv=m3_inv(ibody)
-	else
-		is_static=true
-		ibody_inv=make_m3(0,0,0)
-	end
+	return {
+		-- register a 3d object as a physic object
+		add=function(self,a)
+			local bbox=a.model
+			local force,torque=v_zero(),v_zero()
+			local is_static=false
 
-	-- 
-	local g={0,-24*a.mass,0}
-	local rb={
-		i_inv=is_static and make_m3(0,0,0) or make_m3(),
-		v=v_zero(),
-		m=a.m,
-		w=v_zero(),
-		mass_inv=is_static and 0 or 1/a.mass,
-		-- obj to world space
-		pt_toworld=function(self,p)
-			return transform(self.m,p)
-		end,		
-		-- world velocity
-		pt_velocity=function(self,p)
-			return v_add(self.v,v_cross(self.w,make_v(self.pos,p)))
+			-- compute (inverse) inertia tensor
+			local ibody_inv
+			if a.mass>0 then
+				local ex,ey,ez=unpack(a.extents)
+				-- 4=square(2*extents)
+				local size={4*ex*ex,4*ey*ey,4*ez*ez}
+				local ibody=make_m3(size[2]+size[3],size[1]+size[3],size[1]+size[2])
+				-- 8=2*2*2 extents
+				local mass=8*a.mass*(ex*ey*ez)*(a.density or 0.1)
+				m_scale(ibody,mass/12)
+				
+				-- invert 
+				ibody_inv=m3_inv(ibody)
+			else
+				is_static=true
+				ibody_inv=make_m3(0,0,0)
+			end
+
+			-- 
+			local g={0,-24*a.mass,0}
+			local rb={
+				id=_id,
+				i_inv=is_static and make_m3(0,0,0) or make_m3(),
+				v=v_zero(),
+				m=a.m,
+				w=v_zero(),
+				mass_inv=is_static and 0 or 1/a.mass,
+				-- obj to world space
+				pt_toworld=function(self,p)
+					return transform(self.m,p)
+				end,		
+				-- world velocity
+				pt_velocity=function(self,p)
+					return v_add(self.v,v_cross(self.w,make_v(self.pos,p)))
+				end,
+				incident_face=function(self,rn)
+					-- world to local (normal)
+					rn=rotate_inv(self.m,rn)
+					local dmin,fmin=32000
+					for _,f in pairs(bbox.f) do
+						local d=f.sign*rn[f.axis]
+						if d<dmin then
+							dmin,fmin=d,f
+						end
+					end
+					return fmin
+				end,
+				-- register a force
+				add_force=function(self,f,p)
+					if(is_static) return
+					self.sleeping=nil
+					force=v_add(force,f,self.mass)
+					torque=v_add(torque,v_cross(make_v(self.pos,p),f))
+				end,
+				-- impulse at *local* r point
+				apply_impulse=function(self,f,r,sign)
+					if(is_static) return
+					self.v=v_add(self.v,f,sign*self.mass_inv)
+					-- correct angular velocity
+					self.w=v_add(
+						self.w,
+						rotate(
+							self.i_inv,
+							v_cross(r,f)
+						),
+						sign)
+				end,
+				-- apply forces & torque for iteration
+				prepare=function(self,dt)
+					if(is_static or self.sleeping) return
+
+					-- add gravity
+					force=v_add(force,g)
+				
+					-- inverse inertia tensor
+					self.i_inv=m3_x_m3(m3_x_m3(self.m,ibody_inv),m3_transpose(self.m))
+			
+					-- velocity
+					self.v=v_add(self.v,force,self.mass_inv*dt)
+			
+					-- angular velocity
+					self.w=v_add(self.w,rotate(self.i_inv,torque),dt)
+					
+					-- friction
+					v_scale(self.v,1/(1+dt*0.4))
+					v_scale(self.w,1/(1+dt*0.6))
+				end,
+				integrate=function(self,dt)
+					if(is_static or self.sleeping) return
+
+					-- clear forces
+					force,torque=v_zero(),v_zero()
+
+					-- no significant velocity/angular v?
+					if(v_dot(self.v,self.v)<k_small and v_dot(self.w,self.w)<k_small_v) self.sleeping=true self.v=v_zero() self.w=v_zero() return
+
+					self.pos=v_add(self.pos,self.v,dt)
+					q_dydt(self.q,self.w,dt)
+					self.m=m_from_q(self.q)
+					--
+					m_set_pos(self.m,self.pos)
+				end
+			}
+			-- next body
+			_id<<=1
+			-- register rigid bodies
+			return add(physic_actors,setmetatable(a,{__index=rb}))
 		end,
-		incident_face=function(self,rn)
-			-- world to local (normal)
-			rn=rotate_inv(self.m,rn)
-			local dmin,fmin=32000
-			for _,f in pairs(bbox.f) do
-				local d=f.sign*rn[f.axis]
-				if d<dmin then
-					dmin,fmin=d,f
+		update=function()
+			-- update bodies
+			for _,a in pairs(physic_actors) do
+				a:prepare(time_dt)
+			end
+
+			-- collect manifolds
+			local solvers={}
+			for i=1,#physic_actors do
+				local a=physic_actors[i]
+				for j=i+1,#physic_actors do
+					local b=physic_actors[j]
+					local m=overlap(a,b)
+					if m then
+						local pid=a.id|b.id
+						-- new contact?
+						if not contacts[pid] then
+							sfx(rnd{8,9,10})
+							contacts[pid]={a=a,b=b}
+						end
+						contacts[pid].ttl=5
+
+						a.sleeping=nil
+						b.sleeping=nil
+						-- find tangent vectors
+						local tangents={make_basis(m.n)}
+						for _,p in pairs(m.contacts) do										
+							add(solvers,make_contact_solver(m.reference,m.incident,m.n,p,p.dist,tangents))
+						end
+					end
 				end
 			end
-			return fmin
-		end,
-		-- register a force
-		add_force=function(self,f,p)
-			if(is_static) return
-			self.sleeping=nil
-			force=v_add(force,f,self.mass)
-			torque=v_add(torque,v_cross(make_v(self.pos,p),f))
-		end,
-		-- impulse at *local* r point
-		apply_impulse=function(self,f,r,sign)
-			if(is_static) return
-			self.v=v_add(self.v,f,sign*self.mass_inv)
-			-- correct angular velocity
-			self.w=v_add(
-				self.w,
-				rotate(
-					self.i_inv,
-					v_cross(r,f)
-				),
-				sign)
-		end,
-		-- apply forces & torque for iteration
-		prepare=function(self,dt)
-			if(is_static or self.sleeping) return
+			-- remove stale contacts
+			for k,c in pairs(contacts) do
+				c.ttl-=1
+				if(c.ttl<0) contacts[k]=nil
+			end
 
-			-- add gravity
-			force=v_add(force,g)
-		
-			-- inverse inertia tensor
-			self.i_inv=m3_x_m3(m3_x_m3(self.m,ibody_inv),m3_transpose(self.m))
-	
-			-- velocity
-			self.v=v_add(self.v,force,self.mass_inv*dt)
-	
-			-- angular velocity
-			self.w=v_add(self.w,rotate(self.i_inv,torque),dt)
+			-- solve manifolds
+			-- multiple iterations
+			-- required to fix deep contacts
+			for j=1,3 do
+				for i=#solvers,1,-1 do
+					-- still a valid contact?
+					if(not solvers[i]()) deli(solvers,i)
+				end
+			end
 			
-			-- friction
-			v_scale(self.v,1/(1+dt*0.4))
-			v_scale(self.w,1/(1+dt*0.6))
-		end,
-		integrate=function(self,dt)
-			if(is_static or self.sleeping) return
-
-			-- clear forces
-			force,torque=v_zero(),v_zero()
-
-			-- no significant velocity/angular v?
-			if(v_dot(self.v,self.v)<k_small and v_dot(self.w,self.w)<k_small_v) self.sleeping=true self.v=v_zero() self.w=v_zero() return
-
-			self.pos=v_add(self.pos,self.v,dt)
-			q_dydt(self.q,self.w,dt)
-			self.m=m_from_q(self.q)
-			--
-			m_set_pos(self.m,self.pos)
+			-- move bodies
+			for _,a in pairs(physic_actors) do
+				a:integrate(time_dt)
+			end
 		end
 	}
-	-- register rigid bodies
-	return add(physic_actors,setmetatable(a,{__index=rb}))
-end
-
--- physic world
-function world:update()
-	local contacts={}
-	-- update bodies
-	for _,a in pairs(physic_actors) do
-		a:prepare(time_dt)
-	end
-
-	-- collect manifolds
-	for i=1,#physic_actors do
-		local a=physic_actors[i]
-		for j=i+1,#physic_actors do
-			local b=physic_actors[j]
-			local m=overlap(a,b)
-			if m then
-				a.sleeping=nil
-				b.sleeping=nil
-				-- find tangent vectors
-				local tangents={make_basis(m.n)}
-				for _,p in pairs(m.contacts) do										
-					add(contacts,make_contact_solver(m.reference,m.incident,m.n,p,p.dist,tangents))
-				end
-			end
-		end
-	end
-
-	-- solve manifolds
-	-- multiple iterations
-	-- required to fix deep contacts
-	for j=1,3 do
-		for i=#contacts,1,-1 do
-			-- still a valid contact?
-			if(not contacts[i]()) deli(contacts,i)
-		end
-	end
-	
-	-- move bodies
-	for _,a in pairs(physic_actors) do
-		a:integrate(time_dt)
-	end
 end
 
 -->8
@@ -1078,6 +1094,7 @@ function _init()
 	poke(0x5f2d,7)
 
 	_cam=make_cam({0,8,-20})
+	_scene=make_scene()
 
 	palt(0,false)
 	-- shading
@@ -1089,7 +1106,7 @@ function _init()
 		_dithers[i*2]=dithered_fade
 	end
 
-	make_rigidbody(make_ground())
+	_scene:add(make_ground())
 
 	local pins={
 		{0,0,0},
@@ -1101,7 +1118,7 @@ function _init()
 	}
 	for _,q in pairs(pins) do
 		add(_things,
-			make_rigidbody(make_box(
+			_scene:add(make_box(
 				1,{2,6,2},
 				{q[1],3,q[3]},
 				--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
@@ -1149,7 +1166,7 @@ function _update()
 		end
 	end
 
-    world:update()
+    _scene:update()
 
 	time_t+=1
 end
@@ -1242,3 +1259,15 @@ __map__
 222300000000000038393a3b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0404000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 3233000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+__sfx__
+000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00020000056500b650000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000200000c65006650000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000200000d6500d650000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
