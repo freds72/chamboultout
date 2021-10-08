@@ -45,15 +45,12 @@ function polyline(p,c)
 end
 
 function tpoly(v,uv)
-	local p0,spans=v[#v],{}
-	local x0,y0=p0.x,p0.y
-	local u0,v0=uv[#uv-1],uv[#uv]
+	local nv,spans=#v,{}
 	-- ipairs is slower for small arrays
 	for i=1,#v do
-		local p1=v[i]
-		local x1,y1=p1.x,p1.y
-		local u1,v1=uv[2*i-1],uv[2*i]
-		local _x1,_y1,_u1,_v1=x1,y1,u1,v1
+		local p0,uv0,p1,uv1=v[i%nv+1],uv[i%nv+1],v[i],uv[i]
+		local x0,y0,u0,v0=p0.x,p0.y,uv0[1],uv0[2]
+		local x1,y1,u1,v1=p1.x,p1.y,uv1[1],uv1[2]
 		if(y0>y1) x0,y0,x1,y1,u0,v0,u1,v1=x1,y1,x0,y0,u1,v1,u0,v0
 		local dy=y1-y0
 		local dx,du,dv=(x1-x0)/dy,(u1-u0)/dy,(v1-v0)/dy
@@ -86,6 +83,5 @@ function tpoly(v,uv)
 			u0+=du
 			v0+=dv
 		end
-		x0,y0,u0,v0=_x1,_y1,_u1,_v1
 	end
 end

@@ -10,7 +10,6 @@ __lua__
 #include math.lua
 
 -- globals
-local time_t,time_dt=0,1/30
 local _things,_scene={}
 local _sun_dir={0,-0.707,0.707}
 local _dithers={}
@@ -23,6 +22,7 @@ local k_right,k_left=4,8
 local z_near=1
 
 -- physic thresholds+baumgarte
+local time_dt=1/30
 local k_small,k_small_v,k_bias,k_slop=0.01,0.1,0.2,0.05
 
 -->8
@@ -233,6 +233,9 @@ function overlap(a,b)
 	if(a.is_ground) return ground_overlap(a,b)
 	if(b.is_ground) return ground_overlap(b,a)
 	
+	-- cannot overlap
+	if(v_len(make_v(a.pos,b.pos))>a.radius+b.radius) return
+
 	-- B in A space
 	local tx=m_x_m(
 		m3_transpose(a.m),{
@@ -363,6 +366,9 @@ function overlap(a,b)
 end
 
 function ground_overlap(a,b)
+	-- cannot touch ground
+	if(b.pos[2]>b.radius) return
+
 	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
 	local out,contacts={
 		reference=a,
@@ -415,7 +421,7 @@ end
 function make_contact_solver(a,b,n,p,dist,tangents)
 	-- valid contact (e.g)
 	if(not is_contact(a,p,n,dist,-1) and not is_contact(b,p,n,dist)) return
-	local nimpulse,ra,rb=0,make_v(a.pos,p),make_v(b.pos,p)
+	local nimpulse,mass,tm,timpulse,friction,ra,rb=0,a.mass_inv+b.mass_inv,{},{0,0},sqrt(a.friction*b.friction),make_v(a.pos,p),make_v(b.pos,p)
 	local racn,rbcn=v_cross(ra,n),v_cross(rb,n)
 	-- relative velocity at contact point
 	local function rel_vel()
@@ -425,20 +431,13 @@ function make_contact_solver(a,b,n,p,dist,tangents)
 					-1)
 	end
 
-	local nm=a.mass_inv+b.mass_inv
-	local tm,timpulse={nm,nm},{0,0}
-
 	-- normal mass
-	nm+=v_dot(racn,rotate(a.i_inv,racn))+v_dot(rbcn,rotate(b.i_inv,rbcn))
-	nm=1/nm
+	local nm=1/(mass+v_dot(racn,rotate(a.i_inv,racn))+v_dot(rbcn,rotate(b.i_inv,rbcn)))
 
 	-- tangent mass
 	for i=1,2 do
-		local ract=v_cross(tangents[i], ra)
-		local rbct=v_cross(tangents[i], rb)
-
-		tm[i]+=v_dot(ract,rotate(a.i_inv,ract))+v_dot(rbct,rotate(b.i_inv,rbct))
-		tm[i]=1/tm[i]				
+		local ract,rbct=v_cross(tangents[i],ra),v_cross(tangents[i],rb)
+		tm[i]=1/(mass+v_dot(ract,rotate(a.i_inv,ract))+v_dot(rbct,rotate(b.i_inv,rbct)))
 	end
 
 	-- baumgarte
@@ -450,8 +449,7 @@ function make_contact_solver(a,b,n,p,dist,tangents)
 	-- todo:find out unit??
 	if dv<-1 then
 		bias-=max(a.hardness,b.hardness)*dv
-	end
-	local friction=sqrt(a.friction*b.friction)
+	end	
 
 	-- contact solver
 	return function()
@@ -467,7 +465,7 @@ function make_contact_solver(a,b,n,p,dist,tangents)
 			-- clamp frictional impulse
 			local oldpt=timpulse[i]
 			timpulse[i]=mid(oldpt+lambda, -maxlambda, maxlambda)
-			lambda = timpulse[i]-oldpt
+			lambda=timpulse[i]-oldpt
 
 			-- apply friction impulse
 			local impulse=v_clone(tangents[i],lambda)
@@ -530,9 +528,11 @@ function make_scene()
 			local g={0,-24*a.mass,0}
 			local rb={
 				id=_id,
+				-- special case for ground :/
+				radius=a.extents and v_len(a.extents) or 0,
 				i_inv=is_static and make_m3(0,0,0) or make_m3(),
 				v=v_zero(),
-				m=a.m,
+				m=a.m,				
 				w=v_zero(),
 				mass_inv=is_static and 0 or 1/a.mass,
 				-- obj to world space
@@ -764,7 +764,7 @@ function make_cam(pos)
 	}
 end
 
-function axis_poly_clip(axis,dist,v,sign)
+function axis_poly_clip(axis,dist,v,sign,callback)
 	sign=sign or 1
 	local res,v0={},v[#v]
 	local d0=sign*(v0[axis]-dist)
@@ -773,17 +773,22 @@ function axis_poly_clip(axis,dist,v,sign)
 		local d1=sign*(v1[axis]-dist)
 		if d1>0 then
 			if d0<=0 then
-				local nv=v_lerp(v0,v1,d0/(d0-d1))
+				local t=d0/(d0-d1)
+				local nv=v_lerp(v0,v1,t)
 				-- "fixes" clipping
 				nv[axis]=dist
 				res[#res+1]=nv
+				if(callback) callback(i,t)
 			end
 			res[#res+1]=v1
+			if(callback) callback(i)
 		elseif d0>0 then
-			local nv=v_lerp(v0,v1,d0/(d0-d1))
+			local t=d0/(d0-d1)
+			local nv=v_lerp(v0,v1,t)
 			-- "fixes" clipping
 			nv[axis]=dist
 			res[#res+1]=nv
+			if(callback) callback(i,t)
 		end
 		v0=v1
 		d0=d1
@@ -835,10 +840,19 @@ function collect_faces(cam,thing,model,m,out)
 			local v0,v1,v2,v3=v_cache[face[1]],v_cache[face[2]],v_cache[face[3]],v_cache[face[4]]
 			-- mix of near/far verts?
 			if v0.outcode&v1.outcode&v2.outcode&v3.outcode==0 then
-				local verts={v0,v1,v2,v3}
+				local verts,uvs={v0,v1,v2,v3},face.uv
 				-- mix of near+far vertices?
 				if (v0.outcode|v1.outcode|v2.outcode|v3.outcode)&2!=0 then
-					verts=axis_poly_clip(3,z_near,verts)
+					local uv_clipper
+					if face.uv then						
+						uvs={}						
+						uv_clipper=function(i,t)
+							-- clipped?
+							local uv1=face.uv[i]
+							uvs[#uvs+1]=t and v2_lerp(face.uv[i%4+1],uv1,t) or uv1
+						end
+					end
+					verts=axis_poly_clip(3,z_near,verts,1,uv_clipper)
 				end
 				if #verts>2 then
 					-- project + get sort key
@@ -850,6 +864,7 @@ function collect_faces(cam,thing,model,m,out)
 						key+=w
 					end
 					verts.face=face
+					verts.uvs=uvs
 					verts.light=mid(-face.sign*sun[face.axis],-1,1)
 					-- sort key
 					-- todo: improve
@@ -879,8 +894,8 @@ function draw_faces(faces)
 			fillp(0xa5a5|0b0.011)
 			local base=_dithers[flr(6+6*d.light)]
 			pal(base,2)
-			if d.face.uv then
-				tpoly(d,d.face.uv)
+			if d.uvs then				
+				tpoly(d,d.uvs)
 			else
 				polyfill(d,base[d.model.color])
 			end
@@ -931,7 +946,7 @@ function draw_ground()
 
 			local tx,tz=vl[1]*kl+x,vl[3]*kl+z
 			--rectfill(-64,i,64,i,8)
-			tline(0,i,127,i,tx/scale,tz/scale,(vr[1]*kr+x-tx)/128/scale,(vr[3]*kr+z-tz)/128/scale)
+			tline(0,i,127,i,tx>>2,tz>>2,(vr[1]*kr+x-tx)>>9,(vr[3]*kr+z-tz)>>9)
 		end
 	end
 	--rectfill(0,horiz-2,128,horiz-2,7)
@@ -1030,10 +1045,10 @@ function make_box(mass,extents,pos,q)
 	end
 	-- texture (single face only)
 	faces[2].uv={
-		0,2*ey,
-		2*ex,2*ey,
-		2*ex,0,
-		0,0
+		{0,2*ey},
+		{2*ex,2*ey},
+		{2*ex,0},
+		{0,0}
 	}
 	-- initial condition
 	local m=m_from_q(q)
@@ -1117,7 +1132,7 @@ function _init()
 		{4,0, 10},
 	}
 	for _,q in pairs(pins) do
-		add(_things,
+		add(_things,			
 			_scene:add(make_box(
 				1,{2,6,2},
 				{q[1],3,q[3]},
@@ -1154,7 +1169,7 @@ function _update()
 			local hit=hitscan(_things,next_pos,p.pos)
 			if hit then
 				local f=v_normz(make_v(p.pos,next_pos))					
-				v_scale(f,200)
+				v_scale(f,175)
 				hit.owner:add_force(f,hit)
 				deli(_particles,i)
 			elseif next_pos[2]<0.25 then
@@ -1167,16 +1182,6 @@ function _update()
 	end
 
     _scene:update()
-
-	time_t+=1
-end
-
-function draw_edge(a,b,c)
-	local x0,y0,w0=_cam:project2d(a)
-	local x1,y1,w1=_cam:project2d(b)
-	if w0 and w1 then
-		line(x0,y0,x1,y1,c)
-	end
 end
 
 function _draw()
