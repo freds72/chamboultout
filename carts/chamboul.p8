@@ -10,7 +10,7 @@ __lua__
 #include math.lua
 
 -- globals
-local _things,_scene={}
+local _pins,_things,_scene={},{}
 local _sun_dir={0,-0.707,0.707}
 local _dithers={}
 local _particles={}
@@ -80,53 +80,6 @@ function hitscan(boxes,a,b)
 	return closest_hit
 end
 
-
-function get_support(vertices,n)
-	-- !! invert normal !!
-	local axis,sign,dmax,vmax=n.axis,-n.sign,-32000
-	for _,v in pairs(vertices) do
-		-- faster v_dot(n,v)
-		local d=sign*v[axis]
-		if d>dmax then
-			dmax,vmax=d,v
-		end
-	end
-	return vmax
-end
-
-function query_face_directions(a,b,tx)
-	local ma,mb=a.m,b.m
-	-- B rotation in A space
-	if not tx then
-		tx=m_x_m(
-			m3_transpose(a.m),{
-			1,0,0,0,
-			0,1,0,0,
-			0,0,1,0,
-			-a.pos[1],-a.pos[2],-a.pos[3],1})
-		tx=m_x_m(tx,b.m)
-	end
-
-	-- cache B vertices
-	local vb={}
-	for i,v in pairs(b.model.v) do
-		vb[i]=transform(tx,v)
-	end
-
-	local dmax,fmax=-32000
-	for _,f in pairs(a.model.f) do
-		-- find vertex in B most "included" in current face
-		local v=get_support(vb,f)
-		-- faster v_dot(f.n,v)
-		local d=f.sign*v[f.axis]-f.dist
-		-- early exit
-		if(d>0) return d
-		if d>dmax then
-			dmax,fmax=d,f
-		end
-	end
-	return dmax,fmax
-end
 
 function is_minkowski_face(a,b,c,d)
 	local bxa,dxc=v_cross(b.n,a.n),v_cross(d,c)
@@ -213,20 +166,19 @@ end
 -- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
 -- https://www.gdcvault.com/play/1017646/Physics-for-Game-Programmers-The
 -- https://www.randygaul.net/2019/06/19/collision-detection-in-2d-or-3d-some-steps-for-success/
---function get_column(m,i)
---	return {m[i],m[i+4],m[i+8]}
---end
---function track_face_axis(axis,n,s,smax,normal,axisnormal)
---	if(s>0) return true
---
---	if s>smax then
---		smax=s
---		axis=n
---		axisnormal=normal
---	end
---
---	return false,smax,axis,axisnormal
---end
+function get_column(m,i)
+	return {m[i],m[i+4],m[i+8]}
+end
+function get_row(m,i)
+	i=(i-1)<<2
+	return {m[i+1],m[i+2],m[i+3]}
+end
+local face_by_id={
+	3,6,4,
+	[-1]=5,
+	[-2]=1,
+	[-3]=2
+}
 
 function overlap(a,b)
 	-- simplified version for ground/object
@@ -236,6 +188,36 @@ function overlap(a,b)
 	-- cannot overlap
 	if(v_len(make_v(a.pos,b.pos))>a.radius+b.radius) return
 
+	local absc,c={},m3_x_m3(m3_transpose(a.m),b.m)
+	for i,v in pairs(c) do
+		absc[i]=abs(v)
+	end
+	-- a->b (world space) to a space
+	local ab=make_v(a.pos,b.pos)
+	local t=rotate_inv(a.m,ab)
+	
+	local adist,bdist,aaxis,baxis=-32000,-32000
+	-- a vs b
+	for i=1,3 do
+		local d=abs(t[i])-(a.extents[i]+v_dot(get_column(absc,i),b.extents))
+		-- separating axis
+		if(d>0) return		
+		if d>adist then
+			adist=d
+			aaxis=i
+		end
+	end
+	-- b vs a
+	for i=1,3 do
+		local d=abs(v_dot(t, get_row(c,i)))-(b.extents[i]+v_dot(get_row(absc,i),a.extents))
+		-- separating axis
+		if(d>0) return	
+		if d>bdist then
+			bdist=d
+			baxis=i
+		end
+	end
+
 	-- B in A space
 	local tx=m_x_m(
 		m3_transpose(a.m),{
@@ -244,31 +226,6 @@ function overlap(a,b)
 		0,0,1,0,
 		-a.pos[1],-a.pos[2],-a.pos[3],1})
 	tx=m_x_m(tx,b.m)
-	local adist,aface=query_face_directions(a,b,tx)
-	if(adist>0) return
-	local bdist,bface=query_face_directions(b,a)
-	if(bdist>0) return
-
-	--local c=m3_x_m3(m3_transpose(a.m),b.m)
-	--local absc={}
-	--for i,v in pairs(c) do
-	--	absc[i]=abs(v)
-	--end
-	--local t=rotate_inv(a.m,make_v(a.pos,b.pos))
-	--
-	--local adist,bdist=-32000,-32000
-	--local s=abs(t[1])-(a.extents[1]+v_dot(get_column(absc,1),b.extents))
-	--local asep,adist,aaxis,na=track_face_axis(~0,1,s,-32000,m_right(a.m), nil)
-	--if(asep) return
-
-	--s=abs(t[2])-(a.extents[2]+v_dot(get_column(absc,2),b.extents))
-	--asep,adist,aaxis,na=track_face_axis(aaxis,2,s,adist,m_up(a.m), na)
-	--if(asep) return
-
-	--s=abs(t[3])-(a.extents[3]+v_dot(get_column(absc,3),b.extents))
-	--asep,adist,aaxis,na=track_face_axis(aaxis,3,s,adist,m_fwd(a.m), na)
-	--if(asep) return
-
 	local edist,closest_solution=query_edge_direction(a,b,tx)
 	if(edist>0) return
 
@@ -300,14 +257,21 @@ function overlap(a,b)
 			--printh(tostr(time()).."\t face B contact")
 			out.reference=b
 			out.incident=a
-			reference_face=bface
+			reference_face=baxis
+			out.n=rotate_axis(b.m,baxis,1)			
 		else
 			--printh(tostr(time()).."\t face A contact")
 			out.reference=a
 			out.incident=b
-			reference_face=aface	
+			reference_face=aaxis
+			out.n=rotate_axis(a.m,aaxis,1)		
 		end
-		out.n=rotate(out.reference.m,reference_face.n)
+		local rface=face_by_id[reference_face]
+		if v_dot(out.n,ab)<0 then
+			rface=face_by_id[-reference_face]
+		end
+		reference_face=out.reference.model.f[rface]
+		--if(flip) v_scale(out.n,-1)
 		-- find incident face		
 		local incident_face=out.incident:incident_face(out.n)
 		-- clip incident with reference sides
@@ -482,7 +446,7 @@ function make_contact_solver(a,b,n,p,dist,tangents)
 		lambda=nimpulse-tempn			
 	
 		-- impulse too small?
-		-- if(lambda<k_small) return
+		if(lambda<k_small) return
 
 		-- correct linear velocity
 		local impulse=v_clone(n,lambda)
@@ -880,7 +844,7 @@ function collect_faces(cam,thing,model,m,out)
 end
 
 -- draw face
-function draw_faces(faces)
+function draw_faces(faces,hits)
 	
 	for i,d in ipairs(faces) do
 		-- todo: color ramp	
@@ -899,7 +863,8 @@ function draw_faces(faces)
 			else
 				polyfill(d,base[d.model.color])
 			end
-			polyline(d,5)--d.thing.sleeping and 11 or 12)
+			-- if(hits[d.face]) polyfill(d,8)
+			polyline(d,5)--d.thing.sleeping and 11 or 12)			
 		end
 	end
 end
@@ -1132,15 +1097,31 @@ function _init()
 		{4,0, 10},
 	}
 	for _,q in pairs(pins) do
-		add(_things,			
-			_scene:add(make_box(
-				1,{2,6,2},
-				{q[1],3,q[3]},
-				--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-				make_q(v_up,rnd())
+		add(_pins,
+			add(_things,			
+				_scene:add(make_box(
+					1,{2,6,2},
+					{q[1],3,q[3]},
+					--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+					make_q(v_up,rnd())
+				))
 			))
-		)
 	end
+
+	--[[
+	_a=make_box(
+		1,{3,3,3},
+		{0,0,0},
+		--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
+		make_q(v_up,0))
+	_b=make_box(
+		1,{3,3,3},
+		{-2.5,0,0},
+		make_q(v_normz({rnd(),rnd(),rnd()},rnd())))
+		--make_q(v_up,rnd()))
+	add(_things,_a)
+	add(_things,_b)
+	]]
 end
 
 local _fire_ttl=0
@@ -1182,6 +1163,16 @@ function _update()
 	end
 
     _scene:update()
+
+	-- 
+	for _,p in pairs(_pins) do
+		if (not p.on_ground) and p.sleeping then
+			local up=m_up(p.m)
+			if abs(up[2])<0.98 then
+				p.on_ground=true
+			end
+		end
+	end
 end
 
 function _draw()
@@ -1213,7 +1204,16 @@ function _draw()
 	sort(out)
 
 	_mirror=nil
-    draw_faces(out)
+
+	-- _b.pos={-5*cos(time()/8),2.5,0}
+	-- m_set_pos(_b.m,_b.pos)
+	-- local adist,aface,bdist,bface=overlap_simple(_a,_b)
+	-- local hits={}
+	-- if adist then
+	-- 	hits[aface]=true
+	-- 	hits[bface]=true
+	-- end
+    draw_faces(out,hits)
 
 	for _,p in pairs(_particles) do
 		local x0,y0,w0=_cam:project2d(p.pos)
