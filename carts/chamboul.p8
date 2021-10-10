@@ -23,7 +23,7 @@ local z_near=1
 
 -- physic thresholds+baumgarte
 local time_dt=1/30
-local k_small,k_small_v,k_bias,k_slop=0.01,0.1,0.2,0.05
+local k_small,k_small_v,k_bias,k_slop=0.01,0.1,0.3,0.05
 
 -->8
 -- physic engine
@@ -173,12 +173,8 @@ function get_row(m,i)
 	i=(i-1)<<2
 	return {m[i+1],m[i+2],m[i+3]}
 end
-local face_by_id={
-	3,6,4,
-	[-1]=5,
-	[-2]=1,
-	[-3]=2
-}
+-- auto filled by make_box :[
+local face_by_id={}
 
 function overlap(a,b)
 	-- simplified version for ground/object
@@ -186,7 +182,7 @@ function overlap(a,b)
 	if(b.is_ground) return ground_overlap(b,a)
 	
 	-- cannot overlap
-	if(v_len(make_v(a.pos,b.pos))>a.radius+b.radius) return
+	-- if(v_len(make_v(a.pos,b.pos))>a.radius+b.radius) return
 
 	local absc,c={},m3_x_m3(m3_transpose(a.m),b.m)
 	for i,v in pairs(c) do
@@ -252,28 +248,37 @@ function overlap(a,b)
 		--	transform(b.m,b.model.v[eb.tail]),8)
 		--	flip()
 	else
-		local reference_face
+		local rface
 		if 0.95*bdist > adist+0.01 then
 			--printh(tostr(time()).."\t face B contact")
 			out.reference=b
 			out.incident=a
-			reference_face=baxis
-			out.n=rotate_axis(b.m,baxis,1)			
+			rface=baxis
+			out.n=rotate_axis(b.m,baxis,1)	
+			-- flipped "frame of reference"
+			v_scale(ab,-1)
 		else
 			--printh(tostr(time()).."\t face A contact")
 			out.reference=a
 			out.incident=b
-			reference_face=aaxis
+			rface=aaxis
 			out.n=rotate_axis(a.m,aaxis,1)		
 		end
-		local rface=face_by_id[reference_face]
 		if v_dot(out.n,ab)<0 then
-			rface=face_by_id[-reference_face]
+			rface=-rface
+			v_scale(out.n,-1)
 		end
-		reference_face=out.reference.model.f[rface]
+		local reference_face=out.reference.model.f[face_by_id[rface]]		
+		out.reference_face=reference_face
+		--out.n=rotate_axis(out.reference.m,reference_face.axis,reference_face.sign)
+		--local n=rotate(out.reference.m,reference_face.n)
+		--local nr=n[1].." "..n[2].." "..n[3]
+		--local no=out.n[1].." "..out.n[2].." "..out.n[3]
+		--assert(nr==no,nr.." vs "..no)
 		--if(flip) v_scale(out.n,-1)
 		-- find incident face		
 		local incident_face=out.incident:incident_face(out.n)
+		out.incident_face=incident_face
 		-- clip incident with reference sides
 		if out.reference!=a then
 			tx=m_x_m(
@@ -523,8 +528,9 @@ function make_scene()
 				add_force=function(self,f,p)
 					if(is_static) return
 					self.sleeping=nil
-					force=v_add(force,f,self.mass)
-					torque=v_add(torque,v_cross(make_v(self.pos,p),f))
+					-- totally wrong but looks better!
+					force=v_add(force,f,self.mass/(1-a.hardness))
+					torque=v_add(torque,v_cross(make_v(self.pos,p),f),a.friction)
 				end,
 				-- impulse at *local* r point
 				apply_impulse=function(self,f,r,sign)
@@ -621,7 +627,7 @@ function make_scene()
 			-- solve manifolds
 			-- multiple iterations
 			-- required to fix deep contacts
-			for j=1,3 do
+			for j=1,10 do
 				for i=#solvers,1,-1 do
 					-- still a valid contact?
 					if(not solvers[i]()) deli(solvers,i)
@@ -863,10 +869,17 @@ function draw_faces(faces,hits)
 			else
 				polyfill(d,base[d.model.color])
 			end
-			-- if(hits[d.face]) polyfill(d,8)
+			--if(hits and hits.reference_face==d.face) polyfill(d,11)
+			--if(hits and hits.incident_face==d.face) polyfill(d,8)
 			polyline(d,5)--d.thing.sleeping and 11 or 12)			
 		end
 	end
+	--if hits then
+	--	for _,v in pairs(hits.contacts) do
+	--		local x0,y0,w0=_cam:project2d(v)
+	--		if(w0) circfill(x0,y0,2,2)
+	--	end
+	--end
 end
 
 function draw_ground()
@@ -986,7 +999,7 @@ function make_box(mass,extents,pos,q)
 		model.e[i].direction=direction
 	end
 
-	for _,f in pairs(faces) do
+	for i,f in pairs(faces) do
 		-- direct reference to vertex
 		for i=1,4 do
 			f[i]=verts[f[i]]
@@ -995,6 +1008,7 @@ function make_box(mass,extents,pos,q)
 		local axis=deli(f,5)
 		f.axis=abs(axis)
 		f.sign=sgn(axis)
+		face_by_id[axis]=i
 		-- find sides
 		local sides={}
 		for _,e in pairs(model.e) do
@@ -1109,15 +1123,15 @@ function _init()
 	end
 
 	--[[
-	_a=make_box(
+	_a=_scene:add(make_box(
 		1,{3,3,3},
 		{0,0,0},
-		--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-		make_q(v_up,0))
-	_b=make_box(
+		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))))
+		--make_q(v_up,0)))
+	_b=_scene:add(make_box(
 		1,{3,3,3},
 		{-2.5,0,0},
-		make_q(v_normz({rnd(),rnd(),rnd()},rnd())))
+		make_q(v_normz({rnd(),rnd(),rnd()},rnd()))))
 		--make_q(v_up,rnd()))
 	add(_things,_a)
 	add(_things,_b)
@@ -1205,14 +1219,11 @@ function _draw()
 
 	_mirror=nil
 
-	-- _b.pos={-5*cos(time()/8),2.5,0}
-	-- m_set_pos(_b.m,_b.pos)
-	-- local adist,aface,bdist,bface=overlap_simple(_a,_b)
-	-- local hits={}
-	-- if adist then
-	-- 	hits[aface]=true
-	-- 	hits[bface]=true
-	-- end
+	--[[
+	_b.pos={-5*cos(time()/16),2.5,0}
+	m_set_pos(_b.m,_b.pos)	
+	local hits=overlap(_a,_b)
+	]]
     draw_faces(out,hits)
 
 	for _,p in pairs(_particles) do
