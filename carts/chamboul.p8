@@ -27,7 +27,8 @@ local k_small,k_small_v,k_bias,k_slop=0.01,0.1,0.3,0.05
 
 -->8
 -- physic engine
-function hitscan(boxes,a,b)
+function hitscan(boxes,a,b,radius)
+	radius=radius or 0
 	local closest_hit,closest_t
 	for _,box in pairs(boxes) do
 		local m=box.m
@@ -38,7 +39,7 @@ function hitscan(boxes,a,b)
 		-- reset starting points for the next convex space
 		local p0,p1,hit=aa,bb
 		for _,face in pairs(box.model.f) do
-			local plane_dist=face.dist
+			local plane_dist=face.dist+radius
 			local dist,otherdist=face.sign*p0[face.axis],face.sign*p1[face.axis]
 			local side,otherside=dist>plane_dist,otherdist>plane_dist
 			-- outside of convex space
@@ -80,99 +81,14 @@ function hitscan(boxes,a,b)
 	return closest_hit
 end
 
-
-function is_minkowski_face(a,b,c,d)
-	local bxa,dxc=v_cross(b.n,a.n),v_cross(d,c)
-	local cba,dba,adc,bdc=v_dot(c,bxa),v_dot(d,bxa),a.sign*dxc[a.axis],b.sign*dxc[b.axis]
-	return cba*dba<0 and adc*bdc<0 and cba*bdc>0
-end
-
-function build_minkowski_face(ea,eb,tx)
-	local n1,n2=eb.normals[1],eb.normals[2]
-	--v_scale(bn1,-1)
-	--v_scale(bn2,-1)
-	return is_minkowski_face(
-		ea.normals[1],ea.normals[2],
-		rotate_axis(tx,n1.axis,-n1.sign),rotate_axis(tx,n2.axis,-n2.sign))
-end
-
-function find_edge_closest_points(p1,q1,p2,q2)	
-	-- avoid overflow
-	local p1,q1,p2,q2=
-		v_clone(p1,0.0625),
-		v_clone(q1,0.0625),
-		v_clone(p2,0.0625),
-		v_clone(q2,0.0625)
-	local d1,d2=make_v(p1,q1),make_v(p2,q2)
-	local r=make_v(p1,p2)
-	local a,e=v_dot(d1,d1),v_dot(d2,d2)
-	local f,c=v_dot(d2,r),v_dot(d1,r)
-	local b=v_dot(d1,d2)
-	local s=(b*f-c*e)/(a*e-b*b)
-	local t=(b*s+f)/e
-
-	local c1,c2=v_add(p1,d1,-s),v_add(p2,d2,-t)
-	v_scale(c1,16)
-	v_scale(c2,16)
-	return c1,c2
-end
-
 function rotate_axis(tx,axis,sign)
 	axis=(axis-1)<<2
 	return {sign*tx[axis+1],sign*tx[axis+2],sign*tx[axis+3]} 
 end
 
-function query_edge_direction(a,b,tx)
-	local averts,bverts=a.model.v,b.model.v
-	local dmax,closest_solution=-32000
-	for _,ea in pairs(a.model.e) do
-		local eahead=averts[ea.head]
-		local eadir=ea.direction
-		for _,eb in pairs(b.model.e) do	
-			local ebdir=eb.direction
-			-- optimized rotate(tx,eb.direction)
-			ebdir=rotate_axis(tx,ebdir.axis,ebdir.sign)
-			-- parallel edges?
-			if(abs(ebdir[eadir.axis])>0.99) goto parallel
-
-			-- intersection = minkowski face
-			if build_minkowski_face(ea,eb,tx) then
-				local axis=v_normz(v_cross(ea.direction,ebdir))
-				-- a origin is 0
-				if v_dot(axis,eahead)<0 then
-					v_scale(axis,-1)
-				end
-				local ebhead=transform(tx,bverts[eb.head])
-				local d=v_dot(axis,make_v(eahead,ebhead))
-				-- early exit
-				if(d>0) return d
-				if d>dmax then
-					dmax=d
-					-- pin loop references
-					local ea,eb=ea,eb
-					closest_solution=function()
-						return axis,d,find_edge_closest_points(
-							eahead,averts[ea.tail],
-							ebhead,transform(tx,bverts[eb.tail]))
-					end					
-				end
-			end	
-::parallel::			
-		end
-	end
-	return dmax,closest_solution
-end
-
 -- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
 -- https://www.gdcvault.com/play/1017646/Physics-for-Game-Programmers-The
 -- https://www.randygaul.net/2019/06/19/collision-detection-in-2d-or-3d-some-steps-for-success/
-function get_column(m,i)
-	return {m[i],m[i+4],m[i+8]}
-end
-function get_row(m,i)
-	i=(i-1)<<2
-	return {m[i+1],m[i+2],m[i+3]}
-end
 -- auto filled by make_box :[
 local face_by_id={}
 
@@ -182,20 +98,21 @@ function overlap(a,b)
 	if(b.is_ground) return ground_overlap(b,a)
 	
 	-- cannot overlap
-	-- if(v_len(make_v(a.pos,b.pos))>a.radius+b.radius) return
+	if(v_len(make_v(a.pos,b.pos))>a.radius+b.radius) return
 
 	local absc,c={},m3_x_m3(m3_transpose(a.m),b.m)
 	for i,v in pairs(c) do
 		absc[i]=abs(v)
 	end
 	-- a->b (world space) to a space
+	-- ab in a space
 	local ab=make_v(a.pos,b.pos)
 	local t=rotate_inv(a.m,ab)
 	
-	local adist,bdist,aaxis,baxis=-32000,-32000
+	local adist,bdist,edist,aaxis,baxis,closest_solution=-32000,-32000,-32000
 	-- a vs b
 	for i=1,3 do
-		local d=abs(t[i])-(a.extents[i]+v_dot(get_column(absc,i),b.extents))
+		local d=abs(t[i])-(a.extents[i]+v_dot(m_column(absc,i),b.extents))
 		-- separating axis
 		if(d>0) return		
 		if d>adist then
@@ -205,7 +122,7 @@ function overlap(a,b)
 	end
 	-- b vs a
 	for i=1,3 do
-		local d=abs(v_dot(t, get_row(c,i)))-(b.extents[i]+v_dot(get_row(absc,i),a.extents))
+		local d=abs(v_dot(t, m_row(c,i)))-(b.extents[i]+v_dot(m_row(absc,i),a.extents))
 		-- separating axis
 		if(d>0) return	
 		if d>bdist then
@@ -214,108 +131,72 @@ function overlap(a,b)
 		end
 	end
 
-	-- B in A space
-	local tx=m_x_m(
-		m3_transpose(a.m),{
-		1,0,0,0,
-		0,1,0,0,
-		0,0,1,0,
-		-a.pos[1],-a.pos[2],-a.pos[3],1})
-	tx=m_x_m(tx,b.m)
-	local edist,closest_solution=query_edge_direction(a,b,tx)
-	if(edist>0) return
+	-- edge query left out: resulting solution was not "strong" enough \るそ/
 
 	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
 	local out,contacts={},{}
-	if 0.95*edist>max(adist,bdist)+0.01 then
-		--printh(tostr(time()).."\t edge contact")
-		local axis,dist,c1,c2=closest_solution()
+	local rface,tx
+	if 0.95*bdist > adist+0.01 then
+		--printh(tostr(time()).."\t face B contact")
+		out.reference=b
+		out.incident=a
+		rface=baxis
+		out.n=rotate_axis(b.m,baxis,1)	
+		-- flipped "frame of reference"
+		v_scale(ab,-1)
+		-- update basis matrix
+		tx=m_x_m(make_inv_transform(b.m,b.pos),a.m)
+	else
+		--printh(tostr(time()).."\t face A contact")
 		out.reference=a
 		out.incident=b
-		out.n=rotate(a.m,axis)
-		local c=transform(a.m,v_add(c1,c2))
-		-- middle point
-		v_scale(c,0.5)
-		c.dist=dist		
-		add(contacts,c)		
-		-- transform edge in world space
-		-- debug
-		--draw_edge(
-		--	transform(a.m,a.model.v[ea.head]),
-		--	transform(a.m,a.model.v[ea.tail]),11)
-		--draw_edge(
-		--	transform(b.m,b.model.v[eb.head]),
-		--	transform(b.m,b.model.v[eb.tail]),8)
-		--	flip()
-	else
-		local rface
-		if 0.95*bdist > adist+0.01 then
-			--printh(tostr(time()).."\t face B contact")
-			out.reference=b
-			out.incident=a
-			rface=baxis
-			out.n=rotate_axis(b.m,baxis,1)	
-			-- flipped "frame of reference"
-			v_scale(ab,-1)
+		rface=aaxis
+		out.n=rotate_axis(a.m,aaxis,1)		
+		-- 
+		tx=m_x_m(make_inv_transform(a.m,a.pos),b.m)
+	end
+	if v_dot(out.n,ab)<0 then
+		rface=-rface
+		-- flip normal to match
+		v_scale(out.n,-1)
+	end
+	local reference_face=out.reference.model.f[face_by_id[rface]]		
+	out.reference_face=reference_face
+	--out.n=rotate_axis(out.reference.m,reference_face.axis,reference_face.sign)
+	--local n=rotate(out.reference.m,reference_face.n)
+	--local nr=n[1].." "..n[2].." "..n[3]
+	--local no=out.n[1].." "..out.n[2].." "..out.n[3]
+	--assert(nr==no,nr.." vs "..no)
+	-- find incident face		
+	local incident_face=out.incident:incident_face(out.n)
+	out.incident_face=incident_face
+	-- clip incident with reference sides
+	-- convert incident face into reference space
+	for i=1,4 do
+		add(contacts,transform(tx,incident_face[i]))
+	end
+	for _,side in pairs(reference_face.sides) do
+		-- for some reason clipping removed all points
+		if(#contacts==0) return			
+		contacts=axis_poly_clip(
+			side.axis,
+			side.sign*side.dist,
+			contacts,
+			-side.sign)	
+	end
+	-- keep only points under the reference plane
+	local side=reference_face
+	for i=#contacts,1,-1 do
+		local v=contacts[i]
+		local dist=v_dot(side.n,v)-side.dist
+		-- "deep" enough contact?
+		if dist<=0 then				
+			v=transform(out.reference.m,v)
+			v.dist=dist
+			contacts[i]=v
 		else
-			--printh(tostr(time()).."\t face A contact")
-			out.reference=a
-			out.incident=b
-			rface=aaxis
-			out.n=rotate_axis(a.m,aaxis,1)		
-		end
-		if v_dot(out.n,ab)<0 then
-			rface=-rface
-			v_scale(out.n,-1)
-		end
-		local reference_face=out.reference.model.f[face_by_id[rface]]		
-		out.reference_face=reference_face
-		--out.n=rotate_axis(out.reference.m,reference_face.axis,reference_face.sign)
-		--local n=rotate(out.reference.m,reference_face.n)
-		--local nr=n[1].." "..n[2].." "..n[3]
-		--local no=out.n[1].." "..out.n[2].." "..out.n[3]
-		--assert(nr==no,nr.." vs "..no)
-		--if(flip) v_scale(out.n,-1)
-		-- find incident face		
-		local incident_face=out.incident:incident_face(out.n)
-		out.incident_face=incident_face
-		-- clip incident with reference sides
-		if out.reference!=a then
-			tx=m_x_m(
-				m3_transpose(out.reference.m),{
-				1,0,0,0,
-				0,1,0,0,
-				0,0,1,0,
-				-out.reference.pos[1],-out.reference.pos[2],-out.reference.pos[3],1})
-			tx=m_x_m(tx,out.incident.m)
-		end
-		-- convert incident face into reference space
-		for i=1,4 do
-			add(contacts,transform(tx,incident_face[i]))
-		end
-		for _,side in pairs(reference_face.sides) do
-			-- for some reason clipping removed all points
-			if(#contacts==0) return			
-			contacts=axis_poly_clip(
-				side.axis,
-				side.sign*side.dist,
-				contacts,
-				-side.sign)	
-		end
-		-- keep only points under the reference plane
-		local side=reference_face
-		for i=#contacts,1,-1 do
-			local v=contacts[i]
-			local dist=v_dot(side.n,v)-side.dist
-			-- "deep" enough contact?
-			if dist<=0 then				
-				v=transform(out.reference.m,v)
-				v.dist=dist
-				contacts[i]=v
-			else
-				-- invalid contact
-				deli(contacts,i)
-			end
+			-- invalid contact
+			deli(contacts,i)
 		end
 	end
 	-- draw contacts
@@ -529,7 +410,7 @@ function make_scene()
 					if(is_static) return
 					self.sleeping=nil
 					-- totally wrong but looks better!
-					force=v_add(force,f,self.mass/(1-a.hardness))
+					force=v_add(force,f,self.mass/a.hardness)
 					torque=v_add(torque,v_cross(make_v(self.pos,p),f),a.friction)
 				end,
 				-- impulse at *local* r point
@@ -547,7 +428,9 @@ function make_scene()
 				end,
 				-- apply forces & torque for iteration
 				prepare=function(self,dt)
-					if(is_static or self.sleeping) return
+					if(is_static or self.sleeping) self.not_prepared=true return
+					
+					self.not_prepared=nil
 
 					-- add gravity
 					force=v_add(force,g)
@@ -564,6 +447,10 @@ function make_scene()
 					-- friction
 					v_scale(self.v,1/(1+dt*0.4))
 					v_scale(self.w,1/(1+dt*0.6))
+				end,
+				wake_up=function(self)
+					self.sleeping=nil
+					if(self.not_prepared) self:prepare(time_dt)
 				end,
 				integrate=function(self,dt)
 					if(is_static or self.sleeping) return
@@ -591,6 +478,10 @@ function make_scene()
 			for _,a in pairs(physic_actors) do
 				a:prepare(time_dt)
 			end
+			-- age contacts
+			for k,c in pairs(contacts) do
+				if(c.ttl>0) c.ttl-=1
+			end
 
 			-- collect manifolds
 			local solvers={}
@@ -602,14 +493,23 @@ function make_scene()
 					if m then
 						local pid=a.id|b.id
 						-- new contact?
-						if not contacts[pid] then
+						local ct=contacts[pid] or {a=a,b=b,ttl=0}
+						if ct.ttl==0 then
 							sfx(rnd{8,9,10})
-							contacts[pid]={a=a,b=b}
+							-- (re)register
+							contacts[pid]=ct
 						end
-						contacts[pid].ttl=5
+						ct.ttl=5
 
 						a.sleeping=nil
 						b.sleeping=nil
+
+						-- wake up previously touching
+						--for id,ct in pairs(contacts) do
+						--	if(id&a.id!=0) ct.b:wake_up()
+						--	if(id&b.id!=0) ct.a:wake_up()
+						--end
+
 						-- find tangent vectors
 						local tangents={make_basis(m.n)}
 						for _,p in pairs(m.contacts) do										
@@ -617,11 +517,6 @@ function make_scene()
 						end
 					end
 				end
-			end
-			-- remove stale contacts
-			for k,c in pairs(contacts) do
-				c.ttl-=1
-				if(c.ttl<0) contacts[k]=nil
 			end
 
 			-- solve manifolds
@@ -690,10 +585,10 @@ function make_cam(pos)
 
 			-- move
 			local dx,dz,a,jmp=0,0,angle[2],0
-			if(btn(0,1)) dx=2
-			if(btn(1,1)) dx=-2
-			if(btn(2,1)) dz=2
-			if(btn(3,1)) dz=-2
+			if(btn(0,1)) dx=1
+			if(btn(1,1)) dx=-1
+			if(btn(2,1)) dz=1
+			if(btn(3,1)) dz=-1
 
 			dangle=v_add(dangle,{stat(39),stat(38),dx/4})
 			angle=v_add(angle,dangle,1/1024)
@@ -701,17 +596,39 @@ function make_cam(pos)
 			local c,s=cos(a),-sin(a)
 			velocity=v_add(velocity,{s*dz-c*dx,0,c*dz+s*dx}) 	
 			
+			-- check next position
+			local vn,vl=v_normz(velocity)      
+			if vl>0.1 then
+				local next_pos=v_add(self.pos,velocity)
+				local vel2d=v_normz({vn[1],0,vn[3]})
+				-- check current to target pos
+				for i=1,3 do
+					local hit=hitscan(_things,self.pos,next_pos,2)
+					if hit then
+						local n=hit.face.n
+						local fix=v_dot(n,velocity)
+						-- separating?
+						if fix<0 then
+							velocity=v_add(velocity,n,-fix)
+						end
+						next_pos=v_add(self.pos,velocity)
+					else
+						goto clear
+					end
+				end
+				-- cornered?
+				velocity={0,0,0}
+		::clear::
+			else
+				velocity={0,0,0}
+			end
+
 			local pos=v_add(self.pos,velocity)
 
 			-- update rotation
 			local m=make_m_from_euler(unpack(angle))	
 			-- inverse view matrix
-            self.m=m_x_m(m3_transpose(m),{
-				1,0,0,0,
-				0,1,0,0,
-				0,0,1,0,
-				-pos[1],-pos[2],-pos[3],1
-			})
+			self.m=make_inv_transform(m,pos)
             self.pos=pos
 
 			local m=make_m_from_euler(-angle[1],angle[2],angle[3])	
@@ -850,18 +767,21 @@ function collect_faces(cam,thing,model,m,out)
 end
 
 -- draw face
-function draw_faces(faces,hits)
-	
+function draw_faces(faces,mirror)
+	if mirror then
+		fillp(0xf0f0.8)
+	else
+		fillp(0xa5a5|0b0.011)
+	end
+
 	for i,d in ipairs(faces) do
 		-- todo: color ramp	
 		--fillp()
 		--if(not d.visible) fillp(0xa5a5.8)
 		--pal(_dithers[flr(12*(1-d.light))],2)
-		if _mirror then
-			fillp(0xf0f0.8)
+		if mirror then			
 			polyfill(d,0x7d)			
 		else
-			fillp(0xa5a5|0b0.011)
 			local base=_dithers[flr(6+6*d.light)]
 			pal(base,2)
 			if d.uvs then				
@@ -871,7 +791,7 @@ function draw_faces(faces,hits)
 			end
 			--if(hits and hits.reference_face==d.face) polyfill(d,11)
 			--if(hits and hits.incident_face==d.face) polyfill(d,8)
-			polyline(d,5)--d.thing.sleeping and 11 or 12)			
+			--polyline(d,5)--d.thing.sleeping and 11 or 12)			
 		end
 	end
 	--if hits then
@@ -893,7 +813,10 @@ function draw_ground()
 	local sun=v_add(_cam.pos,_sun_dir,-16)
 	local x0,y0,w0=_cam:project2d(sun)
 	if w0 then
-		circfill(x0,y0,12,7)
+		fillp(0xa5a5)
+		circfill(x0,y0,12,0x7c)
+		fillp()
+		circfill(x0,y0,10,7)
 	end
 	local sun=v_add(_cam.pos,{0,0.707,0.707},-16)
 	x0,y0,w0=_cam:project2d(sun)
@@ -934,7 +857,7 @@ function draw_ground()
 	poke4(0x5f38, 0)
 end
 
-function make_box(mass,extents,pos,q)
+function make_box(mass,extents,pos,q,uvs)
 	local ex,ey,ez=unpack(extents)
 	ex/=2
 	ey/=2
@@ -959,7 +882,7 @@ function make_box(mass,extents,pos,q)
 			split"5,6,7,8,2"
 		}
 	local model={
-		color=5,
+		color=4,
 		v=verts,
 		-- faces
 		f=faces,
@@ -998,8 +921,10 @@ function make_box(mass,extents,pos,q)
 		direction[direction.axis]=direction.sign
 		model.e[i].direction=direction
 	end
+	-- base texture location
+	local mx,my=uvs and uvs.mx,uvs and uvs.my
 
-	for i,f in pairs(faces) do
+	for i,f in ipairs(faces) do
 		-- direct reference to vertex
 		for i=1,4 do
 			f[i]=verts[f[i]]
@@ -1021,21 +946,45 @@ function make_box(mass,extents,pos,q)
 		f.n[f.axis]=f.sign
 		-- fast viz check
 		f.dist=v_dot(f.n,f[1])
+		-- any texture?
+		if uvs and uvs[i] then
+			if i==1 or i==6 then
+				f.uv={
+					{mx,my+2*ez},
+					{mx+2*ex,my+2*ez},
+					{mx+2*ex,my},
+					{mx,my}
+				}
+				mx+=2*ex
+			end
+			if i==2 or i==4 then
+				f.uv={
+					{mx,my+2*ey},
+					{mx+2*ex,my+2*ey},
+					{mx+2*ex,my},
+					{mx,my}
+				}
+				mx+=2*ex
+			end
+			if i==3 or i==5 then
+				f.uv={
+					{mx,my+2*ey},
+					{mx+2*ez,my+2*ey},
+					{mx+2*ez,my},
+					{mx,my}
+				}
+				mx+=2*ez
+			end
+		end
 	end
-	-- texture (single face only)
-	faces[2].uv={
-		{0,2*ey},
-		{2*ex,2*ey},
-		{2*ex,0},
-		{0,0}
-	}
+
 	-- initial condition
 	local m=m_from_q(q)
 	m_set_pos(m,pos)
 
 	return {
 		mass=mass,
-		hardness=0.4,
+		hardness=0.2,
 		friction=0.8,
 		extents={ex,ey,ez},
 		model=model,
@@ -1087,7 +1036,7 @@ function _init()
 	-- enable lock+button alias
 	poke(0x5f2d,7)
 
-	_cam=make_cam({0,8,-20})
+	_cam=make_cam({0,5,-20})
 	_scene=make_scene()
 
 	palt(0,false)
@@ -1110,6 +1059,7 @@ function _init()
 		{0,0, 10},
 		{4,0, 10},
 	}
+	--[[
 	for _,q in pairs(pins) do
 		add(_pins,
 			add(_things,			
@@ -1121,6 +1071,41 @@ function _init()
 				))
 			))
 	end
+	]]
+
+	local deers={
+		{0,0,-9},
+		{4,0,9},
+		{-4,0,9}
+	}
+	for _,p in pairs(deers) do
+		add(_things,
+			_scene:add(
+				make_box(
+					0,{3,6,7},
+					{p[1],3,p[3]},
+					--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))))
+					make_q(v_up,0.125-rnd(0.25)),
+					{mx=0,my=0,[2]=true,[4]=true})))
+	end
+
+	-- tower
+	--[[
+	for i=1,5 do
+		_a=_scene:add(make_box(
+			1,{1+rnd(4),3,1+rnd(4)},
+			{0,3+3*i,0},
+			--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))))
+			make_q(v_up,rnd())))
+		add(_things,_a)
+	end
+	_a=_scene:add(make_box(
+			0,{12,3,12},
+			{0,1.5,0},
+			--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))))
+			make_q(v_up,0)))		
+	add(_things,_a)
+	]]
 
 	--[[
 	_a=_scene:add(make_box(
@@ -1147,11 +1132,22 @@ function _update()
 	if _fire_ttl<0 and btnp(4) then
 		_fire_ttl=30
 		local m=_cam.m
+		local b=add(_things,			
+			_scene:add(make_box(
+				1,{2,2,2},
+				v_add(_cam.pos,{1,3,0}),
+				make_q(v_normz({rnd(),rnd(),rnd()},rnd())),
+				{mx=0,my=8,1,2,3,4,5,6}
+				)
+			))
+		b:add_force({128*m[3],96*m[7],128*m[11]},b.pos)
+		--[[
 		add(_particles,{
 			pos=v_clone(_cam.pos),
 			v={m[3],m[7],m[11]},
 			ttl=90+rnd(30)
 		})
+		]]
 	end
 
 	for i=#_particles,1,-1 do
@@ -1181,7 +1177,7 @@ function _update()
 	-- 
 	for _,p in pairs(_pins) do
 		if (not p.on_ground) and p.sleeping then
-			local up=m_up(p.m)
+			local up=m_row(p.m,2)
 			if abs(up[2])<0.98 then
 				p.on_ground=true
 			end
@@ -1193,15 +1189,12 @@ function _draw()
     cls(12)
 
 	-- mirror image
-    local out={}
+    local out,mirror_cam={},{pos=_cam.pos_mirror,m=_cam.m_mirror,flip=true}
 	for _,thing in pairs(_things) do
-		collect_faces({pos=_cam.pos_mirror,m=_cam.m_mirror,flip=true},thing,thing.model,thing.m,out)
+		collect_faces(mirror_cam,thing,thing.model,thing.m,out)
 	end
 
-	sort(out)
-
-	_mirror=true
-    draw_faces(out)
+    draw_faces(out,true)
 
 	-- ground
 	palt(0,true)
@@ -1217,14 +1210,12 @@ function _draw()
 
 	sort(out)
 
-	_mirror=nil
-
 	--[[
 	_b.pos={-5*cos(time()/16),2.5,0}
 	m_set_pos(_b.m,_b.pos)	
 	local hits=overlap(_a,_b)
 	]]
-    draw_faces(out,hits)
+    draw_faces(out)
 
 	for _,p in pairs(_particles) do
 		local x0,y0,w0=_cam:project2d(p.pos)
@@ -1236,45 +1227,49 @@ function _draw()
 end
 
 __gfx__
-00000000888888887777777777777777777777770000770000000000000000000770000000770700000000000007707700000000000000000000000000000000
-11111111888888887776666776666777777777770000770007700070000000007770000000707077000000000000077700000000000000000000000000000000
-11222ee7888888887760000770000677777777777000000007700000000000000770000000707770000000000000000700000000000000000000000000000000
-1533bba7888888887700000770000077777777770000000000000000000000007770000000707700000000000000000700000000000000000000000000000000
-244499a7888888887700000770000077777777770000000700000000000000007000000000770700000077000000000700000000000000000000000000000000
-11556677888888887700000770000077777777770070000000700000000000007000070000777000000770000000000700000000000000000000000000000000
-15566777888888887700000770000077777777770077000000000000000000007000077770770000000770000000000700000000000000000000000000000000
-55667777888888887777777777777777777777770000000000000700000000007770007777700000000000000000007700000000000000000000000000000000
-128888e7000000007777777777777777000000000007700000000000000000007777077700770000000000000000077700000000000000000000000000000000
-22499fa7000000007777777777777777000000000077777000007700000000007777777777770000000000000770777700000000000000000000000000000000
-299aaa77000000007777777777777777000000000770077000777770000000007077777777777000000000007777777700000000000000000000000000000000
-5533bb77000000007777777777777777000000000770007700777770000000007700007777770000000000000007777700000000000000000000000000000000
-155dccc700000000777777a99a777777000000000777000700077770000000007700000770000000000000000000777700000000000000000000000000000000
-11dd66770000000077777a9999a77777000000000007777700007700000000007000000000000000000000000000077700000000000000000000000000000000
-222eeff7000000007777799999977777000000000000007000000000000000007000000000000000000000000000077700000000000000000000000000000000
-22eeff77000000007777749999477777000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000
-00000000000000007777774444777777000000007777777700000000000000007000000077700000000007777000007700000000000000000000000000000000
-00000000000000007777777777777777000000000000777700000700000000000000000077770000007777777770000700000000000000000000000000000000
-00000000000000007777777777777777000000000000077770000770000000000000007777770000007777777770000000000000000000000000000000000000
-00000000000000007777777777777700000000000700007777000000000000000000007777700000077777777777000000000000000000000000000000000000
-00000000000000007007777777777700000000000007000777700000000000000000007777770000000077777777000000000000000000000000000000000000
-00000000000000007007777777777777000000000000000777777000000000000000070777700000000770777777000000000000000000000000000000000000
-00000000000000007777007700770077000000000000000777777000000000000077777777000000007707777700000000000000000000000000000000000000
-00000000000000007777007700770077000000000000000077777770000000000770777700000000000000777777000000000000000000000000000000000000
-00000000000000007777777777777777000000000000000000000000000000000707707770000000077777777707000000000000000000000000000000000000
-00000000000000007777777777777777000000000000007700000000000000007770777777000000000777777707000000000000000000000000000000000000
-00000000000000007777777777777777000000000000007700000000000000007770077777700000077077007777700700000000000000000000000000000000
-00000000000000007777777777777777000000000000077700000000000000007770077777700077777777777777000700000000000000000000000000000000
-00000000000000006777777777777777000000000000777000000000000000007700007777777770777777777770777700000000000000000000000000000000
-00000000000000006777777777777776000000000000770000000000000000007777000007777770770000777777777700000000000000000000000000000000
-00000000000000006667777777777766000000000007777000000000000000007777000000707777770000007777777700000000000000000000000000000000
-00000000000000006666777777777666000000007777700000000000000000007770000000770777700000000007777700000000000000000000000000000000
+000000008888888a777777777777777777777777444444444444444444444444077000000077070000000000000770778888888aa88888880000000000000000
+111111118888888a7776666776666777777777774444444444444444774444777770000000707077000000000000077788aaa88aa88aaa880000000000000000
+11222ee78888888a776000077000067777777777444444444444444477444477077000000070777000000000000000078aa8aa8aa8aa8aa80000000000000000
+1533bba78888888a770000077000007777777777777777774444444477444477777000000070770000000000000000078a888aaaaaa888a80000000000000000
+2444499a8888888a770000077000007777777777000000004444444470444407700000000077070000007700000000078aa888aaaa888aa80000000000000000
+115566778888888a7700000770000077777777770000000044444444704444077000070000777000000770000000000788aa88aaaa88aa880000000000000000
+155667778888888a77000007700000777777777700000000444444444444444470000777707700000007700000000007888aaaaaaaaaa8880000000000000000
+55667777aaaaaaaa77777777777777777777777700000000444444444444444477700077777000000000000000000077aaaaaaaaaaaaaaaa0000000000000000
+128888e7aaaaaaaa77777777777777771111111144277244444444424888888477770777007700000000000000000777aaaaaaaaaaaaaaaa0000000000000000
+22499fa78888888a77777777777777771111111144277244444444429888888977777777777700000000000007707777888aaaaaaaaaa8880000000000000000
+299aaa778888888a7777777777777777111111114427724444444442998888997077777777777000000000007777777788aa88aaaa88aa880000000000000000
+5533bb778888888a777777777777777711111111444224444444444299999999770000777777000000000000000777778aa888aaaa888aa80000000000000000
+155dccc78888888a777777a99a77777711111111444444444444444299999999770000077000000000000000000077778a888aaaaaa888a80000000000000000
+11dd66778888888a77777a9999a7777711111111444444444444444444444444700000000000000000000000000007778aa8aa8aa8aa8aa80000000000000000
+222eeff78888888a7777799999977777111111114444444444444444444444447000000000000000000000000000077788aaa88aa88aaa880000000000000000
+22eeff778888888a777774999947777711111111444444444444444444444444000000000000000000000000000000708888888aa88888880000000000000000
+00000000a88888887777774444777777444444447777777766446644944944947000000077700000000007777000007700000000000000000000000000000000
+00000000a88888887777777777777777444444447777777766446644494949440000000077770000007777777770000700000000000000000000000000000000
+00000000a88888887777777777777777440440447777777766446644449994440000007777770000007777777770000000000000000000000000000000000000
+00000000a88888887777777777777700444004447777777766666644444944440000007777700000077777777777000000000000000000000000000000000000
+00000000a88888887007777777777700444004447777777766666644944944940000007777770000000077777777000000000000000000000000000000000000
+00000000a88888887007777777777777440440447777777744446644494949440000070777700000000770777777000000000000000000000000000000000000
+00000000a88888887777007700770077444444444777777444446644449994440077777777000000007707777700000000000000000000000000000000000000
+00000000aaaaaaaa7777007700770077444444444444444444446644444944440770777700000000000000777777000000000000000000000000000000000000
+00000000aaaaaaaa7777777777777777000000004444444444664466444444440707707770000000077777777707000000000000000000000000000000000000
+00000000a88888887777777777777777000000004444222244664466222244447770777777000000000777777707000000000000000000000000000000000000
+00000000a88888887777777777777777000000004442222244664466222224447770077777700000077077007777700700000000000000000000000000000000
+00000000a88888887777777777777777000000004442222244666666222224447770077777700077777777777777000700000000000000000000000000000000
+00000000a88888886777777777777777000000004442222244666666222224447700007777777770777777777770777700000000000000000000000000000000
+00000000a88888886777777777777776000000004442222244664444222224447777000007777770770000777777777700000000000000000000000000000000
+00000000a88888886667777777777766000000004444222244664444222244447777000000707777770000007777777700000000000000000000000000000000
+00000000a88888886666777777777666000000004444444444664444444444447770000000770777700000000007777700000000000000000000000000000000
 __map__
-040400000000000008090a0b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-020300000000000018191a1b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-121300000000000028292a2b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-222300000000000038393a3b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0404000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-3233000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+260636060606000008090a0b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+350737060606000018191a1b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+061706062506000028292a2b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+062506060606000038393a3b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0606060606060000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0514050514050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+012101210121012101210c0d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+113111311131113111311c1d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __sfx__
 000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000

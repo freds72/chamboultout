@@ -135,14 +135,12 @@ function rotate_inv(m,v)
 end
 
 -- returns basis vectors from matrix
-function m_right(m)
-	return {m[1],m[2],m[3]}
+function m_column(m,i)
+	return {m[i],m[i+4],m[i+8]}
 end
-function m_up(m)
-	return {m[5],m[6],m[7]}
-end
-function m_fwd(m)
-	return {m[9],m[10],m[11]}
+function m_row(m,i)
+	i=(i-1)<<2
+	return {m[i+1],m[i+2],m[i+3]}
 end
 
 -- optimized 4x4 matrix mulitply
@@ -155,6 +153,18 @@ function m_x_m(a,b)
 		a11*b12+a12*b22+a13*b32,a21*b12+a22*b22+a23*b32,a31*b12+a32*b22+a33*b32,0,
 		a11*b13+a12*b23+a13*b33,a21*b13+a22*b23+a23*b33,a31*b13+a32*b23+a33*b33,0,
 		a11*b14+a12*b24+a13*b34+a[13],a21*b14+a22*b24+a23*b34+a[14],a31*b14+a32*b24+a33*b34+a[15],1
+	}
+end
+
+-- take a 3x3 rotation matrix + reference point and create inverse transform
+function make_inv_transform(a,p)
+	local a11,a12,a13,a21,a22,a23,a31,a32,a33=a[1],a[2],a[3],a[5],a[6],a[7],a[9],a[10],a[11]
+	local x,y,z=-p[1],-p[2],-p[3]
+	return {
+		a11,a21,a31,0,
+		a12,a22,a32,0,
+		a13,a23,a33,0,
+		a11*x+a12*y+a13*z,a21*x+a22*y+a23*z,a31*x+a32*y+a33*z,1
 	}
 end
 
