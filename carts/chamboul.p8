@@ -3,7 +3,7 @@ version 33
 __lua__
 -- chamboultout
 -- by @freds72
--- physic code by: Randy Gaul
+-- physic code based on Randy Gaul repo:
 -- https://github.com/RandyGaul/qu3e
 
 #include polyfill.lua
@@ -570,66 +570,16 @@ end
 
 -->8
 -- tracking camera
-function make_cam(pos)
+function make_cam()
 	local up={0,1,0}
-  	local angle,dangle,velocity={0,0,0},{0,0,0},{0,0,0,}
-
 	-- 
 	return {
-		pos=v_clone(pos),    
-		update=function(self)
-			-- damping      
-			angle[3]*=0.8
-			v_scale(dangle,0.6)
-			v_scale(velocity,0.7)
-
-			-- move
-			local dx,dz,a,jmp=0,0,angle[2],0
-			if(btn(0,1)) dx=1
-			if(btn(1,1)) dx=-1
-			if(btn(2,1)) dz=1
-			if(btn(3,1)) dz=-1
-
-			dangle=v_add(dangle,{stat(39),stat(38),dx/4})
-			angle=v_add(angle,dangle,1/1024)
-			
-			local c,s=cos(a),-sin(a)
-			velocity=v_add(velocity,{s*dz-c*dx,0,c*dz+s*dx}) 	
-			
-			-- check next position
-			local vn,vl=v_normz(velocity)      
-			if vl>0.1 then
-				local next_pos=v_add(self.pos,velocity)
-				local vel2d=v_normz({vn[1],0,vn[3]})
-				-- check current to target pos
-				for i=1,3 do
-					local hit=hitscan(_things,self.pos,next_pos,2)
-					if hit then
-						local n=hit.face.n
-						local fix=v_dot(n,velocity)
-						-- separating?
-						if fix<0 then
-							velocity=v_add(velocity,n,-fix)
-						end
-						next_pos=v_add(self.pos,velocity)
-					else
-						goto clear
-					end
-				end
-				-- cornered?
-				velocity={0,0,0}
-		::clear::
-			else
-				velocity={0,0,0}
-			end
-
-			local pos=v_add(self.pos,velocity)
-
+		track=function(self,angle,pos)
 			-- update rotation
 			local m=make_m_from_euler(unpack(angle))	
 			-- inverse view matrix
 			self.m=make_inv_transform(m,pos)
-            self.pos=pos
+            self.pos=v_clone(pos)
 
 			local m=make_m_from_euler(-angle[1],angle[2],angle[3])	
             --
@@ -857,6 +807,68 @@ function draw_ground()
 	poke4(0x5f38, 0)
 end
 
+function make_player(pos)
+  	local angle,dangle,velocity={0,0,0},{0,0,0},{0,0,0,}
+
+	-- 
+	return {
+		transform=function(self)
+			return angle,pos
+		end,
+		update=function(self)
+			-- damping      
+			angle[3]*=0.8
+			v_scale(dangle,0.6)
+			v_scale(velocity,0.7)
+
+			-- move
+			local dx,dz,a,jmp=0,0,angle[2],0
+			if(btn(0,1)) dx=1
+			if(btn(1,1)) dx=-1
+			if(btn(2,1)) dz=1
+			if(btn(3,1)) dz=-1
+
+			dangle=v_add(dangle,{stat(39),stat(38),dx/4})
+			angle=v_add(angle,dangle,1/1024)
+			
+			local c,s=cos(a),-sin(a)
+			velocity=v_add(velocity,{s*dz-c*dx,0,c*dz+s*dx}) 	
+			
+			-- check next position
+			local vn,vl=v_normz(velocity)      
+			if vl>0.1 then
+				local next_pos=v_add(pos,velocity)
+				local vel2d=v_normz({vn[1],0,vn[3]})
+				-- check current to target pos
+				for i=1,3 do
+					local hit=hitscan(_things,pos,next_pos,2)
+					if hit then
+						-- convert hit into world space
+						local n=rotate(hit.owner.m,hit.face.n)
+						local fix=v_dot(n,velocity)
+						-- separating?
+						if fix<0 then
+							velocity=v_add(velocity,n,-fix)
+						end
+						next_pos=v_add(pos,velocity)
+					else
+						goto clear
+					end
+				end
+				-- cornered?
+				velocity={0,0,0}
+		::clear::
+			else
+				velocity={0,0,0}
+			end
+
+			pos=v_add(pos,velocity)
+			self.m=make_m_from_euler(unpack(angle))	
+			m_set_pos(self.m,pos)
+		end		
+	}	
+end
+
 function make_box(mass,extents,pos,q,uvs)
 	local ex,ey,ez=unpack(extents)
 	ex/=2
@@ -1021,14 +1033,6 @@ function make_ground()
 	}
 end
 
-function make_picker()
-	local lmb=0
-	return {
-		update=function(self)			
-		end
-	}
-end
-
 -->8
 -- game loop
 function _init()
@@ -1036,7 +1040,8 @@ function _init()
 	-- enable lock+button alias
 	poke(0x5f2d,7)
 
-	_cam=make_cam({0,5,-20})
+	_plyr=make_player({0,5,-20})
+	_cam=make_cam()
 	_scene=make_scene()
 
 	palt(0,false)
@@ -1126,7 +1131,8 @@ end
 local _fire_ttl=0
 
 function _update()
-	_cam:update()
+	_plyr:update()
+	_cam:track(_plyr:transform())
 	
 	_fire_ttl-=1
 	if _fire_ttl<0 and btnp(4) then
@@ -1224,6 +1230,17 @@ function _draw()
 			circ(x0,y0,w0,7)
 		end
 	end
+
+	fillp()
+	palt(0,true)
+	rectfill(2,117,10,125,0)
+	spr(44,3,118)
+	for i=-1,1 do
+		for j=-1,1 do
+			print("6",13+i,119+j,0)	
+		end
+	end
+	print("6",13,119,8)	
 end
 
 __gfx__
@@ -1243,13 +1260,13 @@ __gfx__
 11dd66778888888a77777a9999a7777711111111444444444444444444444444700000000000000000000000000007778aa8aa8aa8aa8aa80000000000000000
 222eeff78888888a7777799999977777111111114444444444444444444444447000000000000000000000000000077788aaa88aa88aaa880000000000000000
 22eeff778888888a777774999947777711111111444444444444444444444444000000000000000000000000000000708888888aa88888880000000000000000
-00000000a88888887777774444777777444444447777777766446644944944947000000077700000000007777000007700000000000000000000000000000000
-00000000a88888887777777777777777444444447777777766446644494949440000000077770000007777777770000700000000000000000000000000000000
-00000000a88888887777777777777777440440447777777766446644449994440000007777770000007777777770000000000000000000000000000000000000
-00000000a88888887777777777777700444004447777777766666644444944440000007777700000077777777777000000000000000000000000000000000000
-00000000a88888887007777777777700444004447777777766666644944944940000007777770000000077777777000000000000000000000000000000000000
-00000000a88888887007777777777777440440447777777744446644494949440000070777700000000770777777000000000000000000000000000000000000
-00000000a88888887777007700770077444444444777777444446644449994440077777777000000007707777700000000000000000000000000000000000000
+00000000a88888887777774444777777444444447777777766446644944944947000000077700000000007777000007788898880000000000000000000000000
+00000000a888888877777777777777774444444477777777664466444949494400000000777700000077777777700007888a8880000000000000000000000000
+00000000a888888877777777777777774404404477777777664466444499944400000077777700000077777777700000888a8880000000000000000000000000
+00000000a8888888777777777777770044400444777777776666664444494444000000777770000007777777777700009aaaaa90000000000000000000000000
+00000000a888888870077777777777004440044477777777666666449449449400000077777700000000777777770000888a8880000000000000000000000000
+00000000a888888870077777777777774404404477777777444466444949494400000707777000000007707777770000888a8880000000000000000000000000
+00000000a88888887777007700770077444444444777777444446644449994440077777777000000007707777700000088898880000000000000000000000000
 00000000aaaaaaaa7777007700770077444444444444444444446644444944440770777700000000000000777777000000000000000000000000000000000000
 00000000aaaaaaaa7777777777777777000000004444444444664466444444440707707770000000077777777707000000000000000000000000000000000000
 00000000a88888887777777777777777000000004444222244664466222244447770777777000000000777777707000000000000000000000000000000000000
