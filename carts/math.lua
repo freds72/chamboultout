@@ -156,6 +156,18 @@ function m_x_m(a,b)
 	}
 end
 
+-- take a 3x3 rotation matrix + reference point and create inverse transform
+function make_inv_transform(a,p)
+	local a11,a12,a13,a21,a22,a23,a31,a32,a33=a[1],a[2],a[3],a[5],a[6],a[7],a[9],a[10],a[11]
+	local x,y,z=-p[1],-p[2],-p[3]
+	return {
+		a11,a21,a31,0,
+		a12,a22,a32,0,
+		a13,a23,a33,0,
+		a11*x+a12*y+a13*z,a21*x+a22*y+a23*z,a31*x+a32*y+a33*z,1
+	}
+end
+
 -- optimized matrix x vector multiply
 function transform(m,v)
 	local x,y,z=v[1],v[2],v[3]

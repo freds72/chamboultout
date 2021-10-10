@@ -80,87 +80,9 @@ function hitscan(boxes,a,b)
 	return closest_hit
 end
 
-
-function is_minkowski_face(a,b,c,d)
-	local bxa,dxc=v_cross(b.n,a.n),v_cross(d,c)
-	local cba,dba,adc,bdc=v_dot(c,bxa),v_dot(d,bxa),a.sign*dxc[a.axis],b.sign*dxc[b.axis]
-	return cba*dba<0 and adc*bdc<0 and cba*bdc>0
-end
-
-function build_minkowski_face(ea,eb,tx)
-	local n1,n2=eb.normals[1],eb.normals[2]
-	--v_scale(bn1,-1)
-	--v_scale(bn2,-1)
-	return is_minkowski_face(
-		ea.normals[1],ea.normals[2],
-		rotate_axis(tx,n1.axis,-n1.sign),rotate_axis(tx,n2.axis,-n2.sign))
-end
-
-function find_edge_closest_points(p1,q1,p2,q2)	
-	-- avoid overflow
-	local p1,q1,p2,q2=
-		v_clone(p1,0.0625),
-		v_clone(q1,0.0625),
-		v_clone(p2,0.0625),
-		v_clone(q2,0.0625)
-	local d1,d2=make_v(p1,q1),make_v(p2,q2)
-	local r=make_v(p1,p2)
-	local a,e=v_dot(d1,d1),v_dot(d2,d2)
-	local f,c=v_dot(d2,r),v_dot(d1,r)
-	local b=v_dot(d1,d2)
-	local s=(b*f-c*e)/(a*e-b*b)
-	local t=(b*s+f)/e
-
-	local c1,c2=v_add(p1,d1,-s),v_add(p2,d2,-t)
-	v_scale(c1,16)
-	v_scale(c2,16)
-	return c1,c2
-end
-
 function rotate_axis(tx,axis,sign)
 	axis=(axis-1)<<2
 	return {sign*tx[axis+1],sign*tx[axis+2],sign*tx[axis+3]} 
-end
-
-function query_edge_direction(a,b,tx)
-	local averts,bverts=a.model.v,b.model.v
-	local dmax,closest_solution=-32000
-	for _,ea in pairs(a.model.e) do
-		local eahead=averts[ea.head]
-		local eadir=ea.direction
-		for _,eb in pairs(b.model.e) do	
-			local ebdir=eb.direction
-			-- optimized rotate(tx,eb.direction)
-			ebdir=rotate_axis(tx,ebdir.axis,ebdir.sign)
-			-- parallel edges?
-			if(abs(ebdir[eadir.axis])>0.99) goto parallel
-
-			-- intersection = minkowski face
-			if build_minkowski_face(ea,eb,tx) then
-				local axis=v_normz(v_cross(ea.direction,ebdir))
-				-- a origin is 0
-				if v_dot(axis,eahead)<0 then
-					v_scale(axis,-1)
-				end
-				local ebhead=transform(tx,bverts[eb.head])
-				local d=v_dot(axis,make_v(eahead,ebhead))
-				-- early exit
-				if(d>0) return d
-				if d>dmax then
-					dmax=d
-					-- pin loop references
-					local ea,eb=ea,eb
-					closest_solution=function()
-						return axis,d,find_edge_closest_points(
-							eahead,averts[ea.tail],
-							ebhead,transform(tx,bverts[eb.tail]))
-					end					
-				end
-			end	
-::parallel::			
-		end
-	end
-	return dmax,closest_solution
 end
 
 -- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
@@ -208,107 +130,72 @@ function overlap(a,b)
 		end
 	end
 
-	-- B in A space
-	local tx=m_x_m(
-		m3_transpose(a.m),{
-		1,0,0,0,
-		0,1,0,0,
-		0,0,1,0,
-		-a.pos[1],-a.pos[2],-a.pos[3],1})
-	tx=m_x_m(tx,b.m)
-	edist,closest_solution=query_edge_direction(a,b,tx)
-	if(edist>0) return
-
+	-- edge query left out: resulting solution was not "strong" enough \¨/
+	
 	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
 	local out,contacts={},{}
-	if 0.95*edist>max(adist,bdist)+0.01 then
-		--printh(tostr(time()).."\t edge contact")
-		local axis,dist,c1,c2=closest_solution()
+	local rface,tx
+	if 0.95*bdist > adist+0.01 then
+		--printh(tostr(time()).."\t face B contact")
+		out.reference=b
+		out.incident=a
+		rface=baxis
+		out.n=rotate_axis(b.m,baxis,1)	
+		-- flipped "frame of reference"
+		v_scale(ab,-1)
+		-- update basis matrix
+		tx=m_x_m(make_inv_transform(b.m,b.pos),a.m)
+	else
+		--printh(tostr(time()).."\t face A contact")
 		out.reference=a
 		out.incident=b
-		out.n=rotate(a.m,axis)
-		local c=transform(a.m,v_add(c1,c2))
-		-- middle point
-		v_scale(c,0.5)
-		c.dist=dist		
-		add(contacts,c)		
-		-- transform edge in world space
-		-- debug
-		--draw_edge(
-		--	transform(a.m,a.model.v[ea.head]),
-		--	transform(a.m,a.model.v[ea.tail]),11)
-		--draw_edge(
-		--	transform(b.m,b.model.v[eb.head]),
-		--	transform(b.m,b.model.v[eb.tail]),8)
-		--	flip()
-	else
-		local rface
-		if 0.95*bdist > adist+0.01 then
-			--printh(tostr(time()).."\t face B contact")
-			out.reference=b
-			out.incident=a
-			rface=baxis
-			out.n=rotate_axis(b.m,baxis,1)	
-			-- flipped "frame of reference"
-			v_scale(ab,-1)
-			-- update basis matrix
-			tx=m_x_m(
-				m3_transpose(b.m),{
-				1,0,0,0,
-				0,1,0,0,
-				0,0,1,0,
-				-b.pos[1],-b.pos[2],-b.pos[3],1})
-			tx=m_x_m(tx,a.m)
+		rface=aaxis
+		out.n=rotate_axis(a.m,aaxis,1)		
+		-- 
+		tx=m_x_m(make_inv_transform(a.m,a.pos),b.m)
+	end
+	if v_dot(out.n,ab)<0 then
+		rface=-rface
+		-- flip normal to match
+		v_scale(out.n,-1)
+	end
+	local reference_face=out.reference.model.f[face_by_id[rface]]		
+	out.reference_face=reference_face
+	--out.n=rotate_axis(out.reference.m,reference_face.axis,reference_face.sign)
+	--local n=rotate(out.reference.m,reference_face.n)
+	--local nr=n[1].." "..n[2].." "..n[3]
+	--local no=out.n[1].." "..out.n[2].." "..out.n[3]
+	--assert(nr==no,nr.." vs "..no)
+	-- find incident face		
+	local incident_face=out.incident:incident_face(out.n)
+	out.incident_face=incident_face
+	-- clip incident with reference sides
+	-- convert incident face into reference space
+	for i=1,4 do
+		add(contacts,transform(tx,incident_face[i]))
+	end
+	for _,side in pairs(reference_face.sides) do
+		-- for some reason clipping removed all points
+		if(#contacts==0) return			
+		contacts=axis_poly_clip(
+			side.axis,
+			side.sign*side.dist,
+			contacts,
+			-side.sign)	
+	end
+	-- keep only points under the reference plane
+	local side=reference_face
+	for i=#contacts,1,-1 do
+		local v=contacts[i]
+		local dist=v_dot(side.n,v)-side.dist
+		-- "deep" enough contact?
+		if dist<=0 then				
+			v=transform(out.reference.m,v)
+			v.dist=dist
+			contacts[i]=v
 		else
-			--printh(tostr(time()).."\t face A contact")
-			out.reference=a
-			out.incident=b
-			rface=aaxis
-			out.n=rotate_axis(a.m,aaxis,1)		
-		end
-		if v_dot(out.n,ab)<0 then
-			rface=-rface
-			-- flip normal to match
-			v_scale(out.n,-1)
-		end
-		local reference_face=out.reference.model.f[face_by_id[rface]]		
-		out.reference_face=reference_face
-		--out.n=rotate_axis(out.reference.m,reference_face.axis,reference_face.sign)
-		--local n=rotate(out.reference.m,reference_face.n)
-		--local nr=n[1].." "..n[2].." "..n[3]
-		--local no=out.n[1].." "..out.n[2].." "..out.n[3]
-		--assert(nr==no,nr.." vs "..no)
-		-- find incident face		
-		local incident_face=out.incident:incident_face(out.n)
-		out.incident_face=incident_face
-		-- clip incident with reference sides
-		-- convert incident face into reference space
-		for i=1,4 do
-			add(contacts,transform(tx,incident_face[i]))
-		end
-		for _,side in pairs(reference_face.sides) do
-			-- for some reason clipping removed all points
-			if(#contacts==0) return			
-			contacts=axis_poly_clip(
-				side.axis,
-				side.sign*side.dist,
-				contacts,
-				-side.sign)	
-		end
-		-- keep only points under the reference plane
-		local side=reference_face
-		for i=#contacts,1,-1 do
-			local v=contacts[i]
-			local dist=v_dot(side.n,v)-side.dist
-			-- "deep" enough contact?
-			if dist<=0 then				
-				v=transform(out.reference.m,v)
-				v.dist=dist
-				contacts[i]=v
-			else
-				-- invalid contact
-				deli(contacts,i)
-			end
+			-- invalid contact
+			deli(contacts,i)
 		end
 	end
 	-- draw contacts
@@ -522,7 +409,7 @@ function make_scene()
 					if(is_static) return
 					self.sleeping=nil
 					-- totally wrong but looks better!
-					force=v_add(force,f,self.mass/(1-a.hardness))
+					force=v_add(force,f,self.mass/a.hardness)
 					torque=v_add(torque,v_cross(make_v(self.pos,p),f),a.friction)
 				end,
 				-- impulse at *local* r point
@@ -699,12 +586,7 @@ function make_cam(pos)
 			-- update rotation
 			local m=make_m_from_euler(unpack(angle))	
 			-- inverse view matrix
-            self.m=m_x_m(m3_transpose(m),{
-				1,0,0,0,
-				0,1,0,0,
-				0,0,1,0,
-				-pos[1],-pos[2],-pos[3],1
-			})
+			self.m=make_inv_transform(m,pos)
             self.pos=pos
 
 			local m=make_m_from_euler(-angle[1],angle[2],angle[3])	
