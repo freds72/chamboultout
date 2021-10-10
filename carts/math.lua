@@ -135,14 +135,12 @@ function rotate_inv(m,v)
 end
 
 -- returns basis vectors from matrix
-function m_right(m)
-	return {m[1],m[2],m[3]}
+function m_column(m,i)
+	return {m[i],m[i+4],m[i+8]}
 end
-function m_up(m)
-	return {m[5],m[6],m[7]}
-end
-function m_fwd(m)
-	return {m[9],m[10],m[11]}
+function m_row(m,i)
+	i=(i-1)<<2
+	return {m[i+1],m[i+2],m[i+3]}
 end
 
 -- optimized 4x4 matrix mulitply

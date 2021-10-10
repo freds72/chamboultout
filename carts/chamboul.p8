@@ -166,13 +166,6 @@ end
 -- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
 -- https://www.gdcvault.com/play/1017646/Physics-for-Game-Programmers-The
 -- https://www.randygaul.net/2019/06/19/collision-detection-in-2d-or-3d-some-steps-for-success/
-function get_column(m,i)
-	return {m[i],m[i+4],m[i+8]}
-end
-function get_row(m,i)
-	i=(i-1)<<2
-	return {m[i+1],m[i+2],m[i+3]}
-end
 -- auto filled by make_box :[
 local face_by_id={}
 
@@ -182,20 +175,21 @@ function overlap(a,b)
 	if(b.is_ground) return ground_overlap(b,a)
 	
 	-- cannot overlap
-	-- if(v_len(make_v(a.pos,b.pos))>a.radius+b.radius) return
+	if(v_len(make_v(a.pos,b.pos))>a.radius+b.radius) return
 
 	local absc,c={},m3_x_m3(m3_transpose(a.m),b.m)
 	for i,v in pairs(c) do
 		absc[i]=abs(v)
 	end
 	-- a->b (world space) to a space
+	-- ab in a space
 	local ab=make_v(a.pos,b.pos)
 	local t=rotate_inv(a.m,ab)
 	
-	local adist,bdist,aaxis,baxis=-32000,-32000
+	local adist,bdist,edist,aaxis,baxis,closest_solution=-32000,-32000,-32000
 	-- a vs b
 	for i=1,3 do
-		local d=abs(t[i])-(a.extents[i]+v_dot(get_column(absc,i),b.extents))
+		local d=abs(t[i])-(a.extents[i]+v_dot(m_column(absc,i),b.extents))
 		-- separating axis
 		if(d>0) return		
 		if d>adist then
@@ -205,7 +199,7 @@ function overlap(a,b)
 	end
 	-- b vs a
 	for i=1,3 do
-		local d=abs(v_dot(t, get_row(c,i)))-(b.extents[i]+v_dot(get_row(absc,i),a.extents))
+		local d=abs(v_dot(t, m_row(c,i)))-(b.extents[i]+v_dot(m_row(absc,i),a.extents))
 		-- separating axis
 		if(d>0) return	
 		if d>bdist then
@@ -222,7 +216,7 @@ function overlap(a,b)
 		0,0,1,0,
 		-a.pos[1],-a.pos[2],-a.pos[3],1})
 	tx=m_x_m(tx,b.m)
-	local edist,closest_solution=query_edge_direction(a,b,tx)
+	edist,closest_solution=query_edge_direction(a,b,tx)
 	if(edist>0) return
 
 	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
@@ -257,6 +251,14 @@ function overlap(a,b)
 			out.n=rotate_axis(b.m,baxis,1)	
 			-- flipped "frame of reference"
 			v_scale(ab,-1)
+			-- update basis matrix
+			tx=m_x_m(
+				m3_transpose(b.m),{
+				1,0,0,0,
+				0,1,0,0,
+				0,0,1,0,
+				-b.pos[1],-b.pos[2],-b.pos[3],1})
+			tx=m_x_m(tx,a.m)
 		else
 			--printh(tostr(time()).."\t face A contact")
 			out.reference=a
@@ -266,6 +268,7 @@ function overlap(a,b)
 		end
 		if v_dot(out.n,ab)<0 then
 			rface=-rface
+			-- flip normal to match
 			v_scale(out.n,-1)
 		end
 		local reference_face=out.reference.model.f[face_by_id[rface]]		
@@ -275,20 +278,10 @@ function overlap(a,b)
 		--local nr=n[1].." "..n[2].." "..n[3]
 		--local no=out.n[1].." "..out.n[2].." "..out.n[3]
 		--assert(nr==no,nr.." vs "..no)
-		--if(flip) v_scale(out.n,-1)
 		-- find incident face		
 		local incident_face=out.incident:incident_face(out.n)
 		out.incident_face=incident_face
 		-- clip incident with reference sides
-		if out.reference!=a then
-			tx=m_x_m(
-				m3_transpose(out.reference.m),{
-				1,0,0,0,
-				0,1,0,0,
-				0,0,1,0,
-				-out.reference.pos[1],-out.reference.pos[2],-out.reference.pos[3],1})
-			tx=m_x_m(tx,out.incident.m)
-		end
 		-- convert incident face into reference space
 		for i=1,4 do
 			add(contacts,transform(tx,incident_face[i]))
@@ -1035,7 +1028,7 @@ function make_box(mass,extents,pos,q)
 
 	return {
 		mass=mass,
-		hardness=0.4,
+		hardness=0.2,
 		friction=0.8,
 		extents={ex,ey,ez},
 		model=model,
@@ -1121,6 +1114,17 @@ function _init()
 				))
 			))
 	end
+	-- tower
+	--[[
+	for i=1,5 do
+		_a=_scene:add(make_box(
+			1,{1+rnd(4),3,1+rnd(4)},
+			{0,3*i,0},
+			--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))))
+			make_q(v_up,rnd())))
+		add(_things,_a)
+	end
+	]]
 
 	--[[
 	_a=_scene:add(make_box(
@@ -1181,7 +1185,7 @@ function _update()
 	-- 
 	for _,p in pairs(_pins) do
 		if (not p.on_ground) and p.sleeping then
-			local up=m_up(p.m)
+			local up=m_row(p.m,2)
 			if abs(up[2])<0.98 then
 				p.on_ground=true
 			end
