@@ -583,13 +583,14 @@ function make_cam()
 
 			local m=make_m_from_euler(-angle[1],angle[2],angle[3])	
             --
+			local x,y,z=unpack(pos)
             self.m_mirror=m_x_m(m3_transpose(m),{
 				1,0,0,0,
 				0,1,0,0,
 				0,0,1,0,
-				-pos[1],pos[2],-pos[3],1
+				-x,y,-z,1
 			})
-            self.pos_mirror={pos[1],-pos[2],pos[3]}
+            self.pos_mirror={x,-y,z}
 		end,
 		project2d=function(self,p)
 			p=transform(self.m,p)
@@ -601,6 +602,7 @@ function make_cam()
 	}
 end
 
+-- callback is use to clip additional data (eg uv)
 function axis_poly_clip(axis,dist,v,sign,callback)
 	sign=sign or 1
 	local res,v0={},v[#v]
@@ -704,7 +706,6 @@ function collect_faces(cam,thing,model,m,out)
 					verts.uvs=uvs
 					verts.light=mid(-face.sign*sun[face.axis],-1,1)
 					-- sort key
-					-- todo: improve
 					verts.key=(key<<4)/#verts
 					verts.thing=thing
 					verts.model=model
@@ -723,7 +724,7 @@ function draw_faces(faces,mirror)
 	else
 		fillp(0xa5a5|0b0.011)
 	end
-
+	local curbase
 	for i,d in ipairs(faces) do
 		-- todo: color ramp	
 		--fillp()
@@ -733,7 +734,10 @@ function draw_faces(faces,mirror)
 			polyfill(d,0x7d)			
 		else
 			local base=_dithers[flr(6+6*d.light)]
-			pal(base,2)
+			if curbase!=base then				
+				curbase=base
+				pal(base,2)
+			end
 			if d.uvs then				
 				tpoly(d,d.uvs)
 			else
@@ -744,20 +748,11 @@ function draw_faces(faces,mirror)
 			--polyline(d,5)--d.thing.sleeping and 11 or 12)			
 		end
 	end
-	--if hits then
-	--	for _,v in pairs(hits.contacts) do
-	--		local x0,y0,w0=_cam:project2d(v)
-	--		if(w0) circfill(x0,y0,2,2)
-	--	end
-	--end
 end
 
 function draw_ground()
 	-- texture coords
-	poke(0x5f38,4)
-	poke(0x5f39,4)
-	poke(0x5f3a,8)
-	poke(0x5f3b,0)
+	poke4(0x5f38,0x0008.0404)
 
 	-- todo: optimize for tokens
 	local sun=v_add(_cam.pos,_sun_dir,-16)
@@ -777,10 +772,7 @@ function draw_ground()
 	end
 
 	local m=_cam.m
-	local fwd,up,right=
-		{m[3],m[7],m[11]},
-		{m[2],m[6],m[10]},
-		{m[1],m[5],m[9]}
+	local right,up,fwd=m_column(m,1),m_column(m,2),m_column(m,3)
 	local x,y,z=unpack(_cam.pos)
 	local scale=4
 	local horiz=32000
@@ -800,9 +792,6 @@ function draw_ground()
 			tline(0,i,127,i,tx>>2,tz>>2,(vr[1]*kr+x-tx)>>9,(vr[3]*kr+z-tz)>>9)
 		end
 	end
-	--rectfill(0,horiz-2,128,horiz-2,7)
-	--rectfill(0,horiz-1,128,horiz-1,5)
-	--rectfill(0,horiz,128,horiz,6)
 
 	poke4(0x5f38, 0)
 end
@@ -832,7 +821,7 @@ function make_player(pos)
 			angle=v_add(angle,dangle,1/1024)
 			
 			local c,s=cos(a),-sin(a)
-			velocity=v_add(velocity,{s*dz-c*dx,0,c*dz+s*dx}) 	
+			velocity=v_add(velocity,{s*dz-c*dx,-2,c*dz+s*dx}) 	
 			
 			-- check next position
 			local vn,vl=v_normz(velocity)      
@@ -844,7 +833,7 @@ function make_player(pos)
 					local hit=hitscan(_things,pos,next_pos,2)
 					if hit then
 						-- convert hit into world space
-						local n=rotate(hit.owner.m,hit.face.n)
+						local n=rotate_axis(hit.owner.m,hit.face.axis,hit.face.sign)
 						local fix=v_dot(n,velocity)
 						-- separating?
 						if fix<0 then
@@ -863,6 +852,7 @@ function make_player(pos)
 			end
 
 			pos=v_add(pos,velocity)
+			pos[2]=max(pos[2],5)
 			self.m=make_m_from_euler(unpack(angle))	
 			m_set_pos(self.m,pos)
 		end		
@@ -1180,15 +1170,6 @@ function _update()
 
     _scene:update()
 
-	-- 
-	for _,p in pairs(_pins) do
-		if (not p.on_ground) and p.sleeping then
-			local up=m_row(p.m,2)
-			if abs(up[2])<0.98 then
-				p.on_ground=true
-			end
-		end
-	end
 end
 
 function _draw()
