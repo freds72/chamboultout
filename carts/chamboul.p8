@@ -13,7 +13,6 @@ __lua__
 local _pins,_things,_scene={},{}
 local _sun_dir={0,-0.707,0.707}
 local _dithers={}
-local _particles={}
 
 -- camera
 local _cam
@@ -28,65 +27,6 @@ local k_small,k_small_v,k_bias,k_slop=0.01,0.1,0.3,0.05
 
 -->8
 -- physic engine
-function hitscan(boxes,a,b,radius)
-	radius=radius or 0
-	local closest_hit,closest_t
-	for _,box in pairs(boxes) do
-		local m=box.m
-		-- convert start/end into object space
-		local aa,bb=transform_inv(m,a),transform_inv(m,b)
-		-- use local space for distance check
-		local dir=make_v(aa,bb)
-		-- reset starting points for the next convex space
-		local p0,p1,hit=aa,bb
-		for _,face in pairs(box.model.f) do
-			local plane_dist=face.dist+radius
-			local dist,otherdist=face.sign*p0[face.axis],face.sign*p1[face.axis]
-			local side,otherside=dist>plane_dist,otherdist>plane_dist
-			-- outside of convex space
-			if(side and otherside) hit=nil break
-			-- crossing a plane
-			local t=dist-plane_dist
-			if t<0 then
-				t-=0x0.01
-			else
-				t+=0x0.01
-			end  
-			-- cliping fraction
-			local frac=t/(dist-otherdist)
-			if frac>0 and frac<1 then
-				local p=v_lerp(p0,p1,frac)
-				if side then
-					-- segment entering
-					p0=p
-					hit=p0
-					hit.owner=box
-					hit.face=face
-				else
-					-- segment leaving
-					p1=p
-				end
-			end
-		end
-		if hit then
-			-- project hit back on segment to find closest hit
-			local t=v_dot(dir,hit)
-			if closest_hit then
-				if(t<closest_t) closest_hit,closest_t=hit,t
-			else
-				closest_hit,closest_t=hit,t
-			end
-		end
-	end
-	-- return hit
-	return closest_hit
-end
-
-function rotate_axis(tx,axis,sign)
-	axis=(axis-1)<<2
-	return {sign*tx[axis+1],sign*tx[axis+2],sign*tx[axis+3]} 
-end
-
 -- http://media.steampowered.com/apps/valve/2015/DirkGregorius_Contacts.pdf
 -- https://www.gdcvault.com/play/1017646/Physics-for-Game-Programmers-The
 -- https://www.randygaul.net/2019/06/19/collision-detection-in-2d-or-3d-some-steps-for-success/
@@ -164,11 +104,6 @@ function overlap(a,b)
 	end
 	local reference_face=out.reference.model.f[face_by_id[rface]]		
 	out.reference_face=reference_face
-	--out.n=rotate_axis(out.reference.m,reference_face.axis,reference_face.sign)
-	--local n=rotate(out.reference.m,reference_face.n)
-	--local nr=n[1].." "..n[2].." "..n[3]
-	--local no=out.n[1].." "..out.n[2].." "..out.n[3]
-	--assert(nr==no,nr.." vs "..no)
 	-- find incident face		
 	local incident_face=out.incident:incident_face(out.n)
 	out.incident_face=incident_face
@@ -178,7 +113,7 @@ function overlap(a,b)
 		add(contacts,transform(tx,incident_face[i]))
 	end
 	for _,side in pairs(reference_face.sides) do
-		-- for some reason clipping removed all points
+		-- for some reason clipping removed all points (should not really happen)
 		if(#contacts==0) return			
 		contacts=axis_poly_clip(
 			side.axis,
@@ -218,27 +153,27 @@ function overlap(a,b)
 end
 
 function ground_overlap(a,b)
-	-- cannot touch ground
+	-- cannot touch ground, fast exit
 	if(b.pos[2]>b.radius) return
 
 	-- printh(tostr(time()).."\t faces: "..adist.." "..bdist.." edge:"..edist)
 	local out,contacts={
 		reference=a,
 		incident=b,
-		n=v_clone(v_up),
+		n={0,1,0},
 	},{}
 	
 	-- find incident face
-	local incident_face=out.incident:incident_face(v_up)
+	local m,incident_face=b.m,out.incident:incident_face(v_up)
 	-- keep only points under the reference plane
+	local m2,m6,m10,m14=m[2],m[6],m[10],m[14]
 	for i=1,4 do
 		-- to world space
-		local v=transform(b.m,incident_face[i])
-		local dist=v[2]
+		local v=incident_face[i]
+		local y=m2*v[1]+m6*v[2]+m10*v[3]+m14
 		-- "deep" enough contact?
-		if dist<0 then				
-			v.dist=dist
-			add(contacts,v)
+		if y<0 then				
+			add(contacts,transform(b.m,v)).dist=y
 		end
 	end
 	-- no point below ground
@@ -587,17 +522,6 @@ function make_cam()
 			-- inverse view matrix
 			self.m=make_inv_transform(m,pos)
             self.pos=pos
-
-			local m=make_m_from_euler(-angle[1],angle[2],angle[3])	
-            --
-			local x,y,z=unpack(pos)
-            self.m_mirror=m_x_m(m3_transpose(m),{
-				1,0,0,0,
-				0,1,0,0,
-				0,0,1,0,
-				-x,y,-z,1
-			})
-            self.pos_mirror={x,-y,z}
 		end,
 		project2d=function(self,p)
 			p=transform(self.m,p)
@@ -651,7 +575,6 @@ local v_cache_cls={
 		-- inline: local a=m_x_v(t.m,t.v[k])
 		local m,x,y,z=t.m,v[1],v[2],v[3]
 		local ax,ay,az=m[1]*x+m[5]*y+m[9]*z+m[13],m[2]*x+m[6]*y+m[10]*z+m[14],m[3]*x+m[7]*y+m[11]*z+m[15]
-		ay*=(t.flip and -1 or 1)
 		local outcode=2
 		if(az>z_near) outcode=0
 		if(ax>az) outcode+=4
@@ -679,7 +602,7 @@ function collect_faces(cam,thing,model,m,out)
 	-- object to world
 	-- world to cam
 	-- vertex cache (and model context)
-	local v_cache=setmetatable({m=m_x_m(cam.m,m),flip=cam.flip or false},v_cache_cls)
+	local v_cache=setmetatable({m=m_x_m(cam.m,m)},v_cache_cls)
 
 	for _,face in pairs(model.f) do
 		if v_dot(face.n,cam_pos)>face.dist then
@@ -760,9 +683,11 @@ function draw_ground()
 	-- texture coords
 	poke4(0x5f38,0x0008.0404)
 
+	local x0,y0=_cam:project2d({0,0,0})
+
 	local xc,yc,zc=unpack(_cam.pos)
 	local scale=4
-	for y=64,127 do
+	for y=y0\1,127 do
 		local w_inv=yc/(y-64)
 		local x0,z0=-64*w_inv+xc,128*w_inv+zc
 		tline(0,y,127,y,x0+(w_inv*(y%1)),z0,w_inv,0)
@@ -1177,36 +1102,14 @@ function _update()
 	_plyr:update()
 	_cam:track(_ball or _plyr)
 
-	for i=#_particles,1,-1 do
-		local p=_particles[i]
-		p.ttl-=1
-		if p.ttl<0 then
-			deli(_particles,i)
-		else
-			local next_pos=v_add(p.pos,p.v,4)
-			local hit=hitscan(_things,next_pos,p.pos)
-			if hit then
-				local f=v_normz(make_v(p.pos,next_pos))					
-				v_scale(f,175)
-				hit.owner:add_force(f,hit)
-				deli(_particles,i)
-			elseif next_pos[2]<0.25 then
-				deli(_particles,i)
-			else
-				p.pos=next_pos
-				p.v[2]-=0.05
-			end
-		end
-	end
-
-  _scene:update()
+  	_scene:update()
 	-- update fire
 	srand(time())
 	for mem=89*64,95*64,64 do
 		memcpy(mem-64,mem,8)
 	end
 	for i=0,15 do
-	 sset(i,95,rnd{7,10})
+		sset(i,95,rnd{7,10})
 	end
 end
 
@@ -1251,7 +1154,6 @@ function _draw()
 		end
 		sspr(0,88+j,16,1,x0-w0,y0-w0+j*dh,2*w0,ceil(dh))
 	end
-	circfill(x0,y0,2,11)
 
 	fillp()
 	pal()
@@ -1263,20 +1165,14 @@ function _draw()
 	end
 	
 	-- draw normal
-  palt(0,false)
+  	palt(0,false)
 	local out={}
 	for _,thing in pairs(_things) do
 		collect_faces(_cam,thing,thing.model,thing.m,out)
 	end
 
-	sort(out)
-
-	--[[
-	_b.pos={-5*cos(time()/16),2.5,0}
-	m_set_pos(_b.m,_b.pos)	
-	local hits=overlap(_a,_b)
-	]]
-  -- draw_faces(out)
+	sort(out)	
+  	draw_faces(out)
 	fillp()
 
 	palt(0,true)

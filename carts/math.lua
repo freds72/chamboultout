@@ -120,11 +120,28 @@ function m_set_pos(m,v)
 	m[15]=v[3]
 end
 
+-- optimized matrix x vector multiply
+function transform(m,v)
+	local x,y,z=v[1],v[2],v[3]
+	return {m[1]*x+m[5]*y+m[9]*z+m[13],m[2]*x+m[6]*y+m[10]*z+m[14],m[3]*x+m[7]*y+m[11]*z+m[15]}
+end
+
 -- inline matrix vector multiply invert
 -- inc. position
 function transform_inv(m,v)
 	local x,y,z=v[1]-m[13],v[2]-m[14],v[3]-m[15]
 	return {m[1]*x+m[2]*y+m[3]*z,m[5]*x+m[6]*y+m[7]*z,m[9]*x+m[10]*y+m[11]*z}
+end
+
+-- optimized matrix x vector multiply
+-- excl. translation
+function rotate(m,v)
+	local x,y,z=v[1],v[2],v[3]
+	return {m[1]*x+m[5]*y+m[9]*z,m[2]*x+m[6]*y+m[10]*z,m[3]*x+m[7]*y+m[11]*z}
+end
+function rotate_axis(tx,axis,sign)
+	axis=(axis-1)<<2
+	return {sign*tx[axis+1],sign*tx[axis+2],sign*tx[axis+3]} 
 end
 
 -- inline matrix vector multiply invert
@@ -166,19 +183,6 @@ function make_inv_transform(a,p)
 		a13,a23,a33,0,
 		a11*x+a12*y+a13*z,a21*x+a22*y+a23*z,a31*x+a32*y+a33*z,1
 	}
-end
-
--- optimized matrix x vector multiply
-function transform(m,v)
-	local x,y,z=v[1],v[2],v[3]
-	return {m[1]*x+m[5]*y+m[9]*z+m[13],m[2]*x+m[6]*y+m[10]*z+m[14],m[3]*x+m[7]*y+m[11]*z+m[15]}
-end
-
--- optimized matrix x vector multiply
--- excl. translation
-function rotate(m,v)
-	local x,y,z=v[1],v[2],v[3]
-	return {m[1]*x+m[5]*y+m[9]*z,m[2]*x+m[6]*y+m[10]*z,m[3]*x+m[7]*y+m[11]*z}
 end
 
 function m_scale(m,scale)
@@ -235,12 +239,6 @@ function m3_x_m3(a,b)
 		a11*b13+a12*b23+a13*b33,a21*b13+a22*b23+a23*b33,a31*b13+a32*b23+a33*b33,0,
 		0,0,0,1
     }
-end
-
-function m3_print(m)
-	for j=0,2 do
-		printh(m[j*4+1].."\t"..m[j*4+2].."\t"..m[j*4+3])
-	end
 end
 
 -- quaternion
