@@ -10,7 +10,7 @@ __lua__
 #include math.lua
 
 -- globals
-local _pins,_things,_scene={},{}
+local _things,_scene={}
 local _sun_dir={0,-0.707,0.707}
 local _dithers={}
 
@@ -35,6 +35,8 @@ local face_by_id={}
 
 function overlap(a,b)
 	if(a.static and b.static) return
+	-- 
+	if(a.disabled or b.disabled) return
 	-- simplified version for ground/object
 	if(a.is_ground) return ground_overlap(a,b)
 	if(b.is_ground) return ground_overlap(b,a)
@@ -355,7 +357,7 @@ function make_scene()
 				end,
 				-- apply forces & torque for iteration
 				prepare=function(self,dt)
-					if(is_static or self.sleeping) self.not_prepared=true return
+					if(is_static or self.sleeping or self.disabled) self.not_prepared=true return
 					
 					self.not_prepared=nil
 
@@ -377,10 +379,11 @@ function make_scene()
 				end,
 				wake_up=function(self)
 					self.sleeping=nil
+					self.disabled=nil
 					if(self.not_prepared) self:prepare(time_dt)
 				end,
 				integrate=function(self,dt)
-					if(is_static or self.sleeping) return
+					if(is_static or self.sleeping or self.disabled) return
 
 					-- clear forces
 					force,torque=v_zero(),v_zero()
@@ -707,19 +710,67 @@ function bprint(s,x,y,c,c2)
 	print(s,x,y,c)
 end
 
-function make_player(pos)
+function play_state()
+	local pos={0,5,-32}
 	local dir,pow=0,0	
-  	local ttl=0
-	-- states
-	local states,current_state,next_state
-	local draw_mode="move"
+  	local ttl,score,throw,frame=0,0,0,1
+	-- pins
+	local pins,pin_positions={},{
+		{0,0,0},
+		{-2,0,5},
+		{2,0,5},
+		{-4,0,10},
+		{0,0, 10},
+		{4,0, 10},
+	}
+	local active_pins=split"1,2,3,4,5,6"
+	local textures={{mx=13,c=7},{mx=15,c=4},{mx=17,c=8}}
+	for i,q in pairs(pin_positions) do
+		local tex=textures[i%#textures+1]
+		local pin=add(pins,
+					add(_things,			
+						_scene:add(
+							make_box(
+								1,{2,6,2},
+								{q[1],3,q[3]},
+								make_q(v_up,0.1-rnd(0.2)),
+								{mx=tex.mx,my=0,c=tex.c,[2]=true}
+						),
+						1.92,
+						split"0.0390625, 0.0, 0.0, 0.0, 0.0, 0.19531250000000003, 0.0, 0.0, 0.0, 0.0, 0.0390625, 0.0, 0.0, 0.0, 0.0, 1"
+						)
+					))
+		pin.location=q		
+	end
+	-- ball
+	local ball=add(_things,			
+			_scene:add(
+				make_box(
+					1,{2,2,2},
+					v_zero(),
+					make_q(v_up,0),
+					{mx=0,my=rnd{8,10,12},1,2,3,4,5,6}),
+					3.12,
+					split"0.0732421875, 0.0, 0.0, 0.0, 0.0, 0.0732421875, 0.0, 0.0, 0.0, 0.0, 0.0732421875, 0.0, 0.0, 0.0, 0.0, 1"
+				))		
+	ball.friction=0.3	
+	ball.disabled=true
 
+	-- states
+	local states,current_state,current_state_name,next_state
+	local function next_state_handler(state)
+		next_state=function()
+			current_state_name=state
+			current_state=states[state]()
+		end
+		return next_state
+	end
 	states={
 		move=function()
 			local vx=0
 			ttl=20*30
-			next_state=states.direction
-			printh("move")
+			ball.disabled=true
+			next_state_handler"direction"
 			return function(self)
 				-- damping      
 				vx*=0.8
@@ -737,12 +788,10 @@ function make_player(pos)
 			end
 		end,
 		direction=function()
-			printh("dir")
-			draw_mode="dir"
 			-- start random (to avoid button hold cheat)
 			local t=rnd(30)\1
 			ttl=8*30
-			next_state=states.power
+			next_state_handler"power"
 			return function()
 				dir=cos(t/60)
 				t+=1
@@ -750,12 +799,10 @@ function make_player(pos)
 			end
 		end,
 		power=function()
-			printh("power")
-			draw_mode="power"
 			-- start random (to avoid button hold cheat)
 			local t=rnd(30)\1
 			ttl=8*30
-			next_state=states.fire
+			next_state_handler"fire"
 			return function()
 				pow=abs(cos(t/30))
 				t+=1
@@ -763,56 +810,100 @@ function make_player(pos)
 			end
 		end,
 		fire=function()
-			printh("fire")
-			draw_mode=nil
-			_ball=add(_things,			
-				_scene:add(
-					make_box(
-						1,{2,2,2},
-						{pos[1],2,pos[3]},
-						make_q(v_up,0),
-						{mx=0,my=rnd{8,10,12},1,2,3,4,5,6}),
-						3.12,
-						split"0.0732421875, 0.0, 0.0, 0.0, 0.0, 0.0732421875, 0.0, 0.0, 0.0, 0.0, 0.0732421875, 0.0, 0.0, 0.0, 0.0, 1"
-					))		
-			_ball.friction=0.3	
-			_ball.v={0,0,50+25*pow}
-			_ball.w={9*dir,45,9*rnd()}
+			ball.pos={pos[1],2,pos[3]}
+			ball.q=make_q(v_up,0)
+			if(pow>0.8) pow+=0.5 printh("power shot")
+			ball.v={0,0,50+25*pow}
+			ball.w={9*dir,45,9*rnd()}			
+			ball:wake_up()
 			--
-			ttl=0			
-			return states.score()
+			ttl=30
+			next_state_handler"score"
+			return function()
+				-- wait...
+				for _,p in pairs(pins) do
+					if(not p.sleeping) ttl=30
+				end
+			end
 		end,
 		score=function()
-			next_state=states.move
-			printh("score")
-			return function()
-				ttl=5
+			ttl=0
+			-- fallen pins?
+			local tmp,strike=active_pins,true
+			active_pins={}
+			for i in pairs(tmp) do
+				local p=pins[i]				
+				if m_column(p.m,2)[2]<0.7 then
+					p.disabled=true
+					score+=1
+				else
+					active_pins[i]=true
+					strike=false
+				end
 			end
+			throw+=1
+			if strike then
+				if throw==1 then
+					printh("strike") 
+					-- end of turn
+					throw=2
+				else
+					printh("spare") 
+				end
+			end
+			if throw==2 then
+				throw=0
+				frame+=1
+				active_pins=split"1,2,3,4,5,6"
+			end
+			-- prepare for next round
+			for i in pairs(active_pins) do
+				local p=pins[i]
+				local pos=p.location
+				p.pos={pos[1],3,pos[3]}
+				p.q=make_q(v_up,0.1-rnd(0.2))
+				p.v=v_zero()
+				p.w=v_zero()
+				p:wake_up()
+			end
+
+			next_state_handler"move"
 		end
 	}
-	current_state=states.move()
-	-- 
+	-- initial state
+	next_state_handler("move")()
+	
 	return {		
 		update=function(self)	
 			ttl-=1
-			if(ttl<0) current_state=next_state()
+			if(ttl<0) next_state()
 			-- update
 			if(current_state) current_state(self)
+
+			_cam:track(ball.disabled and {pos=pos} or ball)
 		end,
 		draw=function()
-			if draw_mode=="move" then
+			if current_state_name=="move" then
 				bprint("⬅️ move ➡️",nil,96,7,1)
-			elseif draw_mode=="dir" then
+			elseif current_state_name=="direction" then
 				bprint("spin ❎",nil,96,7,1)
 
 				rectfill(64-32*dir,104,64,109,9)
 				rect(64-32*dir,104,64,109,1)
-			elseif draw_mode=="power" then
+			elseif current_state_name=="power" then
 				bprint("power ❎",nil,96,7,1)
 
 				rectfill(48,104,48+32*pow,109,8)
 				rect(48,104,48+32*pow,109,1)
 			end
+
+			-- display
+			fillp()
+			rectfill(2,2,14,16,0)
+			for _,p in pairs(pins) do
+				circfill(8+p.location[1],14-p.location[3],1.5,m_column(p.m,2)[2]>0.7 and 7 or 8)
+			end
+			bprint(score.." ["..throw.."]/"..frame,3,19,7)
 		end	
 	}	
 end
@@ -986,7 +1077,7 @@ end
 -- game loop
 function _init()
 	_scene=make_scene()
-	_plyr=make_player({0,5,-32})
+	_state=play_state()
 	_cam=make_cam()
 
 	-- shading
@@ -1001,50 +1092,24 @@ function _init()
 	-- static ground
 	_scene:add(make_ground())
 
-	local pins={
-		{0,0,0},
-		{-2,0,5},
-		{2,0,5},
-		{-4,0,10},
-		{0,0, 10},
-		{4,0, 10},
-	}
-	local textures={{mx=13,c=7},{mx=15,c=4},{mx=17,c=8}}
-	for i,q in pairs(pins) do
-		local tex=textures[i%#textures+1]
-		add(_pins,
-			add(_things,			
-				_scene:add(
-					make_box(
-						1,{2,6,2},
-						{q[1],3,q[3]},
-						--make_q(v_normz({rnd(),rnd(),rnd()},rnd()))
-						make_q(v_up,0.1-rnd(0.2)),
-						{mx=tex.mx,my=0,c=tex.c,[2]=true}
-				),
-				1.92,
-				split"0.0390625, 0.0, 0.0, 0.0, 0.0, 0.19531250000000003, 0.0, 0.0, 0.0, 0.0, 0.0390625, 0.0, 0.0, 0.0, 0.0, 1"
-				)
-			)).location=q
-	end
-	
 	-- side static limits
 	_scene:add(
 		make_box(
-			0,{20,8,16},
-			{18,4,8},
+			0,{20,8,64},
+			{18,4,0},
 			make_q(v_up,0)))
 	_scene:add(
 		make_box(
-			0,{20,8,16},
-			{-18,4,8},
+			0,{20,8,64},
+			{-18,4,0},
 			make_q(v_up,0)))
+	--[[
 	_scene:add(
 		make_box(
 			0,{20,8,2},
 			{0,4,17},
 			make_q(v_up,0)))
-	
+	]]
 	local wall=make_box(
 		0,{64,28,1},
 		{0,14,0.5},
@@ -1099,8 +1164,7 @@ function _init()
 end
 
 function _update()
-	_plyr:update()
-	_cam:track(_ball or _plyr)
+	_state:update()
 
   	_scene:update()
 	-- update fire
@@ -1140,6 +1204,7 @@ function _draw()
 	draw_faces(out)
 
 	-- fire
+	--[[
 	fillp()
 	palt(0,true)
 	local x0,y0,w0=_cam:project2d({0,0,16})
@@ -1154,6 +1219,7 @@ function _draw()
 		end
 		sspr(0,88+j,16,1,x0-w0,y0-w0+j*dh,2*w0,ceil(dh))
 	end
+	]]
 
 	fillp()
 	pal()
@@ -1168,7 +1234,7 @@ function _draw()
   	palt(0,false)
 	local out={}
 	for _,thing in pairs(_things) do
-		collect_faces(_cam,thing,thing.model,thing.m,out)
+		if(not thing.disabled) collect_faces(_cam,thing,thing.model,thing.m,out)
 	end
 
 	sort(out)	
@@ -1177,13 +1243,7 @@ function _draw()
 
 	palt(0,true)
 
-	_plyr:draw()
-
-	-- display pins map
-	fillp()
-	for _,p in pairs(_pins) do
-		circfill(8+p.location[1],12-p.location[3],1.5,m_column(p.m,2)[2]>0.7 and 7 or 8)
-	end
+	_state:draw()
 end
 
 __gfx__
