@@ -91,7 +91,7 @@ function make_basis(a)
 	if abs(a[1]) >= 0.57735027 then
 		b={a[2], -a[1], 0}
 	else
-		b={0,a[3],-a[2]}
+		b={0,    a[3],  -a[2]}
 	end
 	
 	b=v_normz(b)
@@ -99,21 +99,6 @@ function make_basis(a)
 end
 
 -- matrix functions
--- new matrix from euler angles
-function make_m_from_euler(x,y,z)
-		local a,b = cos(x),-sin(x)
-		local c,d = cos(y),-sin(y)
-		local e,f = cos(z),-sin(z)
-
-    -- yxz order
-  local ce,cf,de,df=c*e,c*f,d*e,d*f
-	 return {
-	  ce+df*b,a*f,cf*b-de,0,
-	  de*b-cf,a*e,df+ce*b,0,
-	  a*d,-b,a*c,0,
-	  0,0,0,1}
-end
-
 function m_set_pos(m,v)
 	m[13]=v[1]
 	m[14]=v[2]
