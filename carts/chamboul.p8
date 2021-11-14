@@ -1307,15 +1307,14 @@ function _draw()
 	end
 
 	-- draw backgroud objects (unsorted)
-	palt(0,true)
 	local out={}
 	for _,o in ipairs(_background) do
 		collect_faces(_cam,o,o.model,o.m,out)
 	end
 	draw_faces(out)
-
-	-- fire
 	fillp()
+
+	-- fire (custom palette )
 	local x0,y0,w0=_cam:project2d({0,0,24})
 	w0*=24/3
 	local dh=w0/7
@@ -1325,7 +1324,6 @@ function _draw()
 		sspr(0,88+j,16,1,x0-w0+1,y0-w0+j*dh,2*w0,cdh)
 	end
 
-	fillp()
 	pal()
 	for _,p in pairs(_props) do
 		local sx,sy,sw,x,y,z=unpack(p)
