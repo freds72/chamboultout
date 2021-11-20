@@ -796,10 +796,19 @@ end
 
 function gameover_state(score)
 	-- load previous scores
-	local scores={}
+	local scores,colors,rank={},split"3,3,3,8,8,8",split"TH ,TH ,RD ,ND ,ST "
 	for i=0,4 do
-		add(scores,dget(i) or 50)
+		add(scores,{key=dget(i) or 50})
 	end
+	add(scores,{new=true,key=score})
+	sort(scores)
+	-- drop first item
+	deli(scores,1)
+	-- save scores
+	for i,s in pairs(scores) do
+		dset(i-1,s.key)
+	end
+
 	return
 		-- update
 		function()
@@ -809,10 +818,19 @@ function gameover_state(score)
 		end,
 		-- draw
 		function()
-			bprint("hiscores",nil,32,7,1)
+			bprint("**hiscores**",nil,32,8,7)
 			local y=48
-			for i,s in ipairs(scores) do
-				bprint(i.." "..s,48,y,i==1 and 8 or 7,1)
+			for i=#scores,1,-1 do
+				local s,c=scores[i],7			
+				bprint((6-i)..rank[i]..s.key,48,y,3,7)			
+				if s.new and (time()%1<0.5) then
+					bprint("★new★",16,y,0,7)					
+					for j=0,7 do
+						clip(0,y+j,127,1)
+						print("★new★",16,y,colors[(j+time()\0.1)%#colors+1])
+						clip()
+					end
+				end
 				y+=8
 			end
 		end
@@ -1256,15 +1274,14 @@ function make_box(density,extents,pos,q,uvs)
 	local m=m_from_q(q)
 	m_set_pos(m,pos)
 
-	return {
-		hardness=0.2,
-		friction=0.8,
+	return with_properties({
 		extents={ex,ey,ez},
 		model=model,
 		pos=v_clone(pos),
 		q=q_clone(q),
 		m=m
-	}
+	},
+	"hardness,0.2,friction,0.8")
 end
 
 function make_ground()
@@ -1311,10 +1328,16 @@ function _init()
 	-- glocal cam
 	_cam=make_cam()
 	-- startup state
-	switch_state(title_state)
+	-- switch_state(title_state)
+	switch_state(gameover_state,150)
 	-- back to menu
 	menuitem(1,"back to menu",function()
 		switch_state(title_state)
+	end)
+	-- clear save data
+	menuitem(1,"reset scores",function()
+		memset(0x5e00,0,256)
+		switch_state(title_state)		
 	end)
 
 	-- fillp shading
@@ -1365,7 +1388,6 @@ function _update()
 	_update_state()
 
 	-- update fire
-	srand(time())
 	for mem=89*64,95*64,64 do
 		memcpy(mem-64,mem,8)
 	end
@@ -1388,6 +1410,8 @@ function _draw()
 		local x0,y0,w0=_cam:project2d(v)
 		pset(x0,y0,w0>2.5 and 6 or 7)
 	end
+	-- reset seed
+	srand(time())
 
 	-- draw backgroud objects (unsorted)
 	local out={}
