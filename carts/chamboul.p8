@@ -936,9 +936,10 @@ function play_state()
 	-- states
 	local states,current_state,draw_state,current_state_name,next_state
 	local function next_state_handler(state,...)
-		next_state=function(...)
+		local args={...}
+		next_state=function()
 			current_state_name=state
-			current_state,draw_state=states[state](...)
+			current_state,draw_state=states[state](unpack(args))
 		end
 		return next_state
 	end
